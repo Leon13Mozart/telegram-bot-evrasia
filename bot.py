@@ -21,8 +21,6 @@ from telegram.ext import (
 
 import os
 
-DB_PATH = os.getenv("DB_PATH", "database.db")
-
 TOKEN = os.getenv(
     "BOT_TOKEN",
 )
