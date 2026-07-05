@@ -23,6 +23,7 @@ import os
 
 TOKEN = os.getenv(
     "BOT_TOKEN",
+    "8835839482:AAFQ0yWwNdZ7dHUzJKPernaOVo_HMUNL24g"
 )
 
 # ID користувачів, які мають доступ до команд
@@ -609,13 +610,25 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
     for group_id, title in groups:
 
         today_join, today_leave = today_stats(group_id)
-
         week_join, week_leave = week_stats(group_id)
-
         month_join, month_leave = month_stats(group_id)
 
         total_join = count_events(group_id, "join")
         total_leave = count_events(group_id, "leave")
+
+        # Кількість учасників
+        try:
+            members = await context.bot.get_chat_member_count(group_id)
+        except Exception:
+            members = "Невідомо"
+
+        # Приріст
+        growth = total_join - total_leave
+
+        if isinstance(growth, int):
+            growth_text = f"+{growth}" if growth >= 0 else str(growth)
+        else:
+            growth_text = "Невідомо"
 
         text += (
             f"🍣 <b>{title}</b>\n\n"
@@ -634,7 +647,10 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
             f"➕ Додалося: {month_join}\n"
             f"➖ Вийшло: {month_leave}\n\n"
 
-            f"📈 <b>Загалом</b>\n"
+            f"👥 <b>Учасників:</b> {members}\n"
+            f"📈 <b>Приріст:</b> {growth_text}\n\n"
+
+            f"📊 <b>Загалом</b>\n"
             f"➕ Додалося: {total_join}\n"
             f"➖ Вийшло: {total_leave}\n\n"
 
