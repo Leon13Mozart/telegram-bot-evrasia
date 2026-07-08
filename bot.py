@@ -3,6 +3,14 @@ import logging
 import asyncio
 from datetime import datetime, timedelta
 
+from telegram.ext import (
+    Application,
+    CommandHandler,
+    ContextTypes,
+    ChatMemberHandler,
+    MessageHandler,
+    filters,
+)
 from openpyxl import Workbook
 from openpyxl.styles import Font, PatternFill, Alignment
 from openpyxl.utils import get_column_letter
@@ -707,7 +715,39 @@ async def save_group(update: Update):
     conn.commit()
     conn.close()
 # ============================================================
-# РОЗСИЛКА ПО ВСІХ ГРУПАХ
+# СОХРАНЕНИЕ ПОСЛЕДНЕГО ФОТО
+# ============================================================
+
+LAST_PHOTO = None
+
+
+async def save_photo(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    global LAST_PHOTO
+
+    if not is_admin(update.effective_user.id):
+        return
+
+    if update.effective_chat.type != "private":
+        return
+
+    if not update.message.photo:
+        return
+
+    LAST_PHOTO = update.message.photo[-1].file_id
+
+    await update.message.reply_text(
+        "✅ Фото збережено.\n\n"
+        "Тепер використайте:\n"
+        "/broadcast Ваш текст"
+    )
+
+
+# ============================================================
+# РОЗСИЛКА
 # ============================================================
 
 async def broadcast(
@@ -715,86 +755,59 @@ async def broadcast(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
+    global LAST_PHOTO
+
     if not is_admin(update.effective_user.id):
         return
+
+    if len(context.args) == 0:
+        await update.message.reply_text(
+            "Використання:\n\n"
+            "/broadcast Ваш текст"
+        )
+        return
+
+    text = " ".join(context.args)
 
     groups_list = get_groups()
 
     if not groups_list:
         await update.message.reply_text(
-            "Немає жодної збереженої групи."
+            "❌ Немає жодної групи."
         )
         return
 
     sent = 0
     failed = 0
 
-    # ==========================
-    # Если отправлено фото
-    # ==========================
+    for group_id, title in groups_list:
 
-    if update.message.photo:
+        try:
 
-        photo = update.message.photo[-1].file_id
-
-        caption = update.message.caption or ""
-
-        caption = caption.replace("/broadcast", "", 1).strip()
-
-        for group_id, title in groups_list:
-
-            try:
+            if LAST_PHOTO:
 
                 await context.bot.send_photo(
                     chat_id=group_id,
-                    photo=photo,
-                    caption=caption
+                    photo=LAST_PHOTO,
+                    caption=text
                 )
 
-                sent += 1
-
-            except Exception as e:
-
-                print(f"{title}: {e}")
-
-                failed += 1
-
-    # ==========================
-    # Если отправлен только текст
-    # ==========================
-
-    else:
-
-        if len(context.args) == 0:
-
-            await update.message.reply_text(
-                "Використання:\n\n"
-                "/broadcast Ваш текст\n\n"
-                "або\n"
-                "Фото + підпис:\n"
-                "/broadcast Ваш текст"
-            )
-
-            return
-
-        text = " ".join(context.args)
-
-        for group_id, title in groups_list:
-
-            try:
+            else:
 
                 await context.bot.send_message(
                     chat_id=group_id,
                     text=text
                 )
 
-                sent += 1
+            sent += 1
 
-            except Exception as e:
+        except Exception as e:
 
-                print(f"{title}: {e}")
+            print(f"{title}: {e}")
 
-                failed += 1
+            failed += 1
+
+    LAST_PHOTO = None
 
     await update.message.reply_text(
         f"""
@@ -806,28 +819,34 @@ async def broadcast(
 """
     )
 
+
 # ============================================================
 # ОБРОБНИК ПОМИЛОК
 # ============================================================
 
-async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
-
+async def error_handler(
+    update: object,
+    context: ContextTypes.DEFAULT_TYPE,
+):
     logging.error(
         "Помилка:",
         exc_info=context.error
     )
+
+
 # ============================================================
 # ЗАПУСК БОТА
 # ============================================================
 
 def main():
 
-    # Створюємо таблиці бази даних
     init_db()
 
     app = Application.builder().token(TOKEN).build()
 
-    # Команди бота
+    app.add_error_handler(error_handler)
+
+    # Команди
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("groups", groups))
     app.add_handler(CommandHandler("stats", stats))
@@ -835,7 +854,15 @@ def main():
     app.add_handler(CommandHandler("excel", excel))
     app.add_handler(CommandHandler("broadcast", broadcast))
 
-    # Обробник входу та виходу учасників
+    # Фото
+    app.add_handler(
+        MessageHandler(
+            filters.PHOTO & filters.ChatType.PRIVATE,
+            save_photo,
+        )
+    )
+
+    # Вхід/вихід учасників
     app.add_handler(
         ChatMemberHandler(
             chat_member_update,
@@ -845,23 +872,24 @@ def main():
 
     async def run():
 
+        print("БОТ УСПІШНО ЗАПУЩЕНИЙ")
+
         await app.initialize()
         await app.start()
 
-        # Видаляємо можливий webhook
         await app.bot.delete_webhook(
             drop_pending_updates=True
         )
 
-        # Запускаємо отримання оновлень
         await app.updater.start_polling()
-
-        print("БОТ УСПІШНО ЗАПУЩЕНИЙ")
 
         await asyncio.Event().wait()
 
     asyncio.run(run())
 
+
+if __name__ == "__main__":
+    main()
 
 # ============================================================
 # ТОЧКА ВХОДУ
