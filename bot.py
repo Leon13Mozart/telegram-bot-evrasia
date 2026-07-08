@@ -9,6 +9,7 @@ from telegram.ext import (
     ContextTypes,
     ChatMemberHandler,
     MessageHandler,
+    CallbackQueryHandler,
     filters,
 )
 from openpyxl import Workbook
@@ -715,38 +716,23 @@ async def save_group(update: Update):
     conn.commit()
     conn.close()
 # ============================================================
-# СОХРАНЕНИЕ ПОСЛЕДНЕГО ФОТО
+# СИСТЕМА РОЗСИЛКИ З ПІДТВЕРДЖЕННЯМ
 # ============================================================
 
-LAST_PHOTO = None
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
 
+# Користувачі, які зараз створюють розсилку
+broadcast_wait = {}
 
-async def save_photo(
-    update: Update,
-    context: ContextTypes.DEFAULT_TYPE,
-):
-
-    global LAST_PHOTO
-
-    print("Фото получено")
-
-    if not is_admin(update.effective_user.id):
-        print("Не админ")
-        return
-
-    if not update.message.photo:
-        print("Нет фото")
-        return
-
-    LAST_PHOTO = update.message.photo[-1].file_id
-
-    print("Фото сохранено:", LAST_PHOTO)
-
-    await update.message.reply_text("✅ Фото сохранено!")
+# Збережене повідомлення
+broadcast_message = {}
 
 
 # ============================================================
-# РОЗСИЛКА
+# КОМАНДА /broadcast
 # ============================================================
 
 async def broadcast(
@@ -754,49 +740,125 @@ async def broadcast(
     context: ContextTypes.DEFAULT_TYPE,
 ):
 
-    global LAST_PHOTO
-
     if not is_admin(update.effective_user.id):
         return
 
-    if len(context.args) == 0:
-        await update.message.reply_text(
-            "Використання:\n\n"
-            "/broadcast Ваш текст"
-        )
+    broadcast_wait[update.effective_user.id] = True
+
+    await update.message.reply_text(
+        "📨 Надішліть повідомлення для розсилки.\n\n"
+        "Можна відправити:\n"
+        "• текст\n"
+        "• фото\n"
+        "• відео\n"
+        "• GIF\n"
+        "• документ\n\n"
+        "Після цього бот покаже попередній перегляд."
+    )
+
+
+# ============================================================
+# ОТРИМАННЯ ПОВІДОМЛЕННЯ
+# ============================================================
+
+async def receive_broadcast(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    user_id = update.effective_user.id
+
+    if user_id not in broadcast_wait:
         return
 
-    text = " ".join(context.args)
+    del broadcast_wait[user_id]
 
-    groups_list = get_groups()
+    broadcast_message[user_id] = (
+        update.effective_chat.id,
+        update.message.message_id,
+    )
 
-    if not groups_list:
-        await update.message.reply_text(
-            "❌ Немає жодної групи."
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "✅ Відправити",
+                    callback_data="broadcast_send",
+                ),
+                InlineKeyboardButton(
+                    "❌ Скасувати",
+                    callback_data="broadcast_cancel",
+                ),
+            ]
+        ]
+    )
+
+    await update.message.reply_text(
+        "👆 Попередній перегляд повідомлення вище.\n\n"
+        "Підтвердити розсилку?",
+        reply_markup=keyboard,
+    )
+    from telegram.ext import CallbackQueryHandler, MessageHandler, filters
+# ============================================================
+# КНОПКИ ПІДТВЕРДЖЕННЯ РОЗСИЛКИ
+# ============================================================
+
+async def broadcast_buttons(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    query = update.callback_query
+    await query.answer()
+
+    user_id = query.from_user.id
+
+    # ----------------------------
+    # Скасування
+    # ----------------------------
+
+    if query.data == "broadcast_cancel":
+
+        if user_id in broadcast_message:
+            del broadcast_message[user_id]
+
+        await query.edit_message_text(
+            "❌ Розсилку скасовано."
         )
+
         return
+
+    # ----------------------------
+    # Відправка
+    # ----------------------------
+
+    if query.data != "broadcast_send":
+        return
+
+    if user_id not in broadcast_message:
+
+        await query.edit_message_text(
+            "❌ Повідомлення не знайдено."
+        )
+
+        return
+
+    from_chat_id, message_id = broadcast_message[user_id]
+
+    groups = get_groups()
 
     sent = 0
     failed = 0
 
-    for group_id, title in groups_list:
+    for group_id, title in groups:
 
         try:
 
-            if LAST_PHOTO:
-
-                await context.bot.send_photo(
-                    chat_id=group_id,
-                    photo=LAST_PHOTO,
-                    caption=text
-                )
-
-            else:
-
-                await context.bot.send_message(
-                    chat_id=group_id,
-                    text=text
-                )
+            await context.bot.copy_message(
+                chat_id=group_id,
+                from_chat_id=from_chat_id,
+                message_id=message_id,
+            )
 
             sent += 1
 
@@ -806,19 +868,17 @@ async def broadcast(
 
             failed += 1
 
-    LAST_PHOTO = None
+    del broadcast_message[user_id]
 
-    await update.message.reply_text(
+    await query.edit_message_text(
         f"""
-📢 Розсилку завершено
+✅ Розсилку завершено
 
-✅ Відправлено: {sent}
+📨 Надіслано: {sent}
 ❌ Помилок: {failed}
-📂 Всього груп: {len(groups_list)}
+📂 Всього груп: {len(groups)}
 """
     )
-
-
 # ============================================================
 # ОБРОБНИК ПОМИЛОК
 # ============================================================
@@ -853,11 +913,18 @@ def main():
     app.add_handler(CommandHandler("excel", excel))
     app.add_handler(CommandHandler("broadcast", broadcast))
 
-    # Фото
+    # Отримання повідомлення для розсилки
     app.add_handler(
         MessageHandler(
-            filters.PHOTO & filters.ChatType.PRIVATE,
-            save_photo,
+            ~filters.COMMAND,
+            receive_broadcast,
+        )
+    )
+
+    # Кнопки підтвердження
+    app.add_handler(
+        CallbackQueryHandler(
+            broadcast_buttons
         )
     )
 
