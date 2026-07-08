@@ -29,36 +29,36 @@ from telegram.ext import (
 # ============================================================
 
 import os
+import sqlite3
+import logging
+from datetime import datetime
+
 
 TOKEN = os.getenv(
     "BOT_TOKEN",
     "8835839482:AAFQ0yWwNdZ7dHUzJKPernaOVo_HMUNL24g"
 )
 
-# ID користувачів, які мають доступ до команд
+
 ADMINS = [
-    929200380,395523040
+    929200380,
+    395523040
 ]
 
+
 DATABASE = "telegram_stats.db"
+
 
 logging.basicConfig(
     format="%(asctime)s | %(levelname)s | %(message)s",
     level=logging.INFO
 )
 
-# ============================================================
-# БАЗА ДАНИХ
-# ============================================================
-
-db = sqlite3.connect(
-    DATABASE,
-    check_same_thread=False
-)
 
 # ============================================================
 # РОБОТА З БАЗОЮ ДАНИХ
 # ============================================================
+
 
 def register_group(chat):
 
@@ -72,10 +72,14 @@ def register_group(chat):
             )
             VALUES(?,?)
             """,
-            (chat.id, chat.title),
+            (
+                chat.id,
+                chat.title
+            )
         )
 
         conn.commit()
+
 
 
 def save_event(chat, user, action):
@@ -104,13 +108,38 @@ def save_event(chat, user, action):
                 username,
                 user.first_name,
                 action,
-                datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-            ),
+                datetime.now().strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                )
+            )
         )
 
         conn.commit()
 
 
+
+# ============================================================
+# ПЕРЕВІРКА БАЗИ
+# ============================================================
+
+
+def check_db():
+
+    with sqlite3.connect(DATABASE) as conn:
+
+        tables = conn.execute(
+            """
+            SELECT name 
+            FROM sqlite_master
+            WHERE type='table'
+            """
+        ).fetchall()
+
+
+    print(
+        "Таблиці SQLite:",
+        tables
+    )
 # ============================================================
 # ОТРИМАННЯ СТАТИСТИКИ
 # ============================================================
@@ -228,6 +257,7 @@ def count_events_from_date(group_id, date):
 
     return joins, leaves
 
+
 # ============================================================
 # СПИСОК ГРУП
 # ============================================================
@@ -321,26 +351,43 @@ async def chat_member_update(
 
 
 def init_db():
+
     with sqlite3.connect(DATABASE) as conn:
 
         conn.execute("""
-        CREATE TABLE IF NOT EXISTS groups (
+        CREATE TABLE IF NOT EXISTS groups(
             group_id INTEGER PRIMARY KEY,
             title TEXT
         )
         """)
 
+
         conn.execute("""
-        CREATE TABLE IF NOT EXISTS events (
+        CREATE TABLE IF NOT EXISTS events(
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             group_id INTEGER,
             user_id INTEGER,
+            username TEXT,
+            first_name TEXT,
             action TEXT,
             event_time TEXT
         )
         """)
 
+
+        conn.execute("""
+        CREATE TABLE IF NOT EXISTS last_broadcast(
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            group_id INTEGER NOT NULL,
+            message_id INTEGER NOT NULL
+        )
+        """)
+
+
         conn.commit()
+
+
+    print("✅ База данных готова")
 
 
 # ============================================================
@@ -356,14 +403,15 @@ async def start(
         return
 
     text = (
-        "📊 Бот статистики працює.\n\n"
-        "Доступні команди:\n\n"
-        "/groups — список груп\n"
-        "/stats — статистика\n"
-        "/addgroup — додати поточну групу\n"
-        "/excel — вивід в таблицю\n"
-        "/broadcast <текст> — розсилка у всі групи"
-    )
+    "📊 Бот статистики працює.\n\n"
+    "Доступні команди:\n\n"
+    "/groups — список груп\n"
+    "/stats — статистика\n"
+    "/addgroup — додати поточну групу\n"
+    "/excel — експорт Excel\n"
+    "/broadcast — розсилка\n"
+    "/deletebroadcast — видалити останню розсилку"
+)
 
     await update.message.reply_text(text)
 
@@ -715,6 +763,13 @@ async def save_group(update: Update):
 
     conn.commit()
     conn.close()
+
+    conn.execute("""
+CREATE TABLE IF NOT EXISTS last_broadcast (
+    group_id INTEGER PRIMARY KEY,
+    message_id INTEGER
+)
+""")
 # ============================================================
 # СИСТЕМА РОЗСИЛКИ З ПІДТВЕРДЖЕННЯМ
 # ============================================================
@@ -879,6 +934,68 @@ async def broadcast_buttons(
 📂 Всього груп: {len(groups)}
 """
     )
+
+# ============================================================
+# ВИДАЛЕННЯ ОСТАННЬОЇ РОЗСИЛКИ
+# ============================================================
+
+async def deletebroadcast(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not is_admin(update.effective_user.id):
+        return
+
+    with sqlite3.connect(DATABASE) as conn:
+
+        rows = conn.execute(
+            """
+            SELECT group_id, message_id
+            FROM last_broadcast
+            """
+        ).fetchall()
+
+    if not rows:
+
+        await update.message.reply_text(
+            "Немає повідомлень для видалення."
+        )
+
+        return
+
+    deleted = 0
+    failed = 0
+
+    for group_id, message_id in rows:
+
+        try:
+
+            await context.bot.delete_message(
+                chat_id=group_id,
+                message_id=message_id
+            )
+
+            deleted += 1
+
+        except Exception as e:
+
+            print(e)
+
+            failed += 1
+
+    with sqlite3.connect(DATABASE) as conn:
+        conn.execute("DELETE FROM last_broadcast")
+        conn.commit()
+
+    await update.message.reply_text(
+        f"""
+🗑 Розсилку видалено
+
+✅ Видалено: {deleted}
+❌ Помилок: {failed}
+"""
+    )
 # ============================================================
 # ОБРОБНИК ПОМИЛОК
 # ============================================================
@@ -893,65 +1010,105 @@ async def error_handler(
     )
 
 
+
 # ============================================================
 # ЗАПУСК БОТА
 # ============================================================
 
 def main():
 
+    # Создаем таблицы
     init_db()
 
-    app = Application.builder().token(TOKEN).build()
+    # Проверяем базу
+    check_db()
+
+
+    app = (
+        Application.builder()
+        .token(TOKEN)
+        .build()
+    )
+
 
     app.add_error_handler(error_handler)
 
-    # Команди
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("groups", groups))
-    app.add_handler(CommandHandler("stats", stats))
-    app.add_handler(CommandHandler("addgroup", addgroup))
-    app.add_handler(CommandHandler("excel", excel))
-    app.add_handler(CommandHandler("broadcast", broadcast))
 
-    # Отримання повідомлення для розсилки
+    # ========================================================
+    # Команди
+    # ========================================================
+
+    app.add_handler(
+        CommandHandler("start", start)
+    )
+
+    app.add_handler(
+        CommandHandler("groups", groups)
+    )
+
+    app.add_handler(
+        CommandHandler("stats", stats)
+    )
+
+    app.add_handler(
+        CommandHandler("addgroup", addgroup)
+    )
+
+    app.add_handler(
+        CommandHandler("excel", excel)
+    )
+
+    app.add_handler(
+        CommandHandler("broadcast", broadcast)
+    )
+
+    app.add_handler(
+        CommandHandler("deletebroadcast", deletebroadcast)
+    )
+
+
+    # ========================================================
+    # Отримання тексту для розсилки
+    # ========================================================
+
     app.add_handler(
         MessageHandler(
             ~filters.COMMAND,
-            receive_broadcast,
+            receive_broadcast
         )
     )
 
+
+    # ========================================================
     # Кнопки підтвердження
+    # ========================================================
+
     app.add_handler(
         CallbackQueryHandler(
             broadcast_buttons
         )
     )
 
-    # Вхід/вихід учасників
+
+    # ========================================================
+    # Вхід / вихід учасників
+    # ========================================================
+
     app.add_handler(
         ChatMemberHandler(
             chat_member_update,
-            ChatMemberHandler.CHAT_MEMBER,
+            ChatMemberHandler.CHAT_MEMBER
         )
     )
 
-    async def run():
 
-        print("БОТ УСПІШНО ЗАПУЩЕНИЙ")
+    print("БОТ УСПІШНО ЗАПУЩЕНИЙ")
 
-        await app.initialize()
-        await app.start()
 
-        await app.bot.delete_webhook(
-            drop_pending_updates=True
-        )
-
-        await app.updater.start_polling()
-
-        await asyncio.Event().wait()
-
-    asyncio.run(run())
+    # Запуск
+    app.run_polling(
+        drop_pending_updates=True
+    )
 
 
 if __name__ == "__main__":
