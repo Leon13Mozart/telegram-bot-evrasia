@@ -728,22 +728,21 @@ async def save_photo(
 
     global LAST_PHOTO
 
-    if not is_admin(update.effective_user.id):
-        return
+    print("Фото получено")
 
-    if update.effective_chat.type != "private":
+    if not is_admin(update.effective_user.id):
+        print("Не админ")
         return
 
     if not update.message.photo:
+        print("Нет фото")
         return
 
     LAST_PHOTO = update.message.photo[-1].file_id
 
-    await update.message.reply_text(
-        "✅ Фото збережено.\n\n"
-        "Тепер використайте:\n"
-        "/broadcast Ваш текст"
-    )
+    print("Фото сохранено:", LAST_PHOTO)
+
+    await update.message.reply_text("✅ Фото сохранено!")
 
 
 # ============================================================
