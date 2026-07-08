@@ -352,7 +352,8 @@ async def start(
         "/groups — список груп\n"
         "/stats — статистика\n"
         "/addgroup — додати поточну групу\n"
-        "/excel — вивід в таблицю"
+        "/excel — вивід в таблицю\n"
+        "/broadcast <текст> — розсилка у всі групи"
     )
 
     await update.message.reply_text(text)
@@ -677,6 +678,133 @@ async def ping(
         "🏓 Pong\nБот працює."
     )
 
+async def save_group(update: Update):
+
+    if update.effective_chat.type not in ("group", "supergroup"):
+        return
+
+    conn = sqlite3.connect("statistics.db")
+    cursor = conn.cursor()
+
+    cursor.execute("""
+    CREATE TABLE IF NOT EXISTS groups(
+        chat_id INTEGER PRIMARY KEY,
+        title TEXT
+    )
+    """)
+
+    cursor.execute(
+        """
+        INSERT OR REPLACE INTO groups(chat_id,title)
+        VALUES(?,?)
+        """,
+        (
+            update.effective_chat.id,
+            update.effective_chat.title
+        )
+    )
+
+    conn.commit()
+    conn.close()
+# ============================================================
+# РОЗСИЛКА ПО ВСІХ ГРУПАХ
+# ============================================================
+
+async def broadcast(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not is_admin(update.effective_user.id):
+        return
+
+    groups_list = get_groups()
+
+    if not groups_list:
+        await update.message.reply_text(
+            "Немає жодної збереженої групи."
+        )
+        return
+
+    sent = 0
+    failed = 0
+
+    # ==========================
+    # Если отправлено фото
+    # ==========================
+
+    if update.message.photo:
+
+        photo = update.message.photo[-1].file_id
+
+        caption = update.message.caption or ""
+
+        caption = caption.replace("/broadcast", "", 1).strip()
+
+        for group_id, title in groups_list:
+
+            try:
+
+                await context.bot.send_photo(
+                    chat_id=group_id,
+                    photo=photo,
+                    caption=caption
+                )
+
+                sent += 1
+
+            except Exception as e:
+
+                print(f"{title}: {e}")
+
+                failed += 1
+
+    # ==========================
+    # Если отправлен только текст
+    # ==========================
+
+    else:
+
+        if len(context.args) == 0:
+
+            await update.message.reply_text(
+                "Використання:\n\n"
+                "/broadcast Ваш текст\n\n"
+                "або\n"
+                "Фото + підпис:\n"
+                "/broadcast Ваш текст"
+            )
+
+            return
+
+        text = " ".join(context.args)
+
+        for group_id, title in groups_list:
+
+            try:
+
+                await context.bot.send_message(
+                    chat_id=group_id,
+                    text=text
+                )
+
+                sent += 1
+
+            except Exception as e:
+
+                print(f"{title}: {e}")
+
+                failed += 1
+
+    await update.message.reply_text(
+        f"""
+📢 Розсилку завершено
+
+✅ Відправлено: {sent}
+❌ Помилок: {failed}
+📂 Всього груп: {len(groups_list)}
+"""
+    )
 
 # ============================================================
 # ОБРОБНИК ПОМИЛОК
@@ -705,6 +833,7 @@ def main():
     app.add_handler(CommandHandler("stats", stats))
     app.add_handler(CommandHandler("addgroup", addgroup))
     app.add_handler(CommandHandler("excel", excel))
+    app.add_handler(CommandHandler("broadcast", broadcast))
 
     # Обробник входу та виходу учасників
     app.add_handler(
