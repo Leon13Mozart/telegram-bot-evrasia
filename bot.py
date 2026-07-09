@@ -791,6 +791,24 @@ delete_message_cache = {}
 
 
 # ============================================================
+# СИСТЕМА РОЗСИЛКИ З ПІДТВЕРДЖЕННЯМ
+# ============================================================
+
+from telegram import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+)
+
+# Користувачі, які зараз створюють розсилку
+broadcast_wait = {}
+
+# Дані повідомлення для розсилки
+broadcast_message = {}
+
+# Останні повідомлення розсилки
+delete_message_cache = {}
+
+# ============================================================
 # КОМАНДА /broadcast
 # ============================================================
 
@@ -806,15 +824,15 @@ async def broadcast(
 
     await update.message.reply_text(
         "📨 Надішліть повідомлення для розсилки.\n\n"
-        "Можна відправити:\n"
+        "Підтримуються:\n"
         "• текст\n"
+        "• Premium Emoji\n"
         "• фото\n"
         "• відео\n"
         "• GIF\n"
         "• документ\n\n"
-        "Після цього бот покаже попередній перегляд."
+        "Після цього бот покаже кнопки підтвердження."
     )
-
 
 # ============================================================
 # ОТРИМАННЯ ПОВІДОМЛЕННЯ
@@ -832,9 +850,12 @@ async def receive_broadcast(
 
     del broadcast_wait[user_id]
 
+    message = update.message
+
+    # Зберігаємо чат та ID повідомлення
     broadcast_message[user_id] = (
-        update.effective_chat.id,
-        update.message.message_id,
+        message.chat.id,
+        message.message_id,
     )
 
     keyboard = InlineKeyboardMarkup(
@@ -853,11 +874,10 @@ async def receive_broadcast(
     )
 
     await update.message.reply_text(
-        "👆 Попередній перегляд повідомлення вище.\n\n"
+        "👆 Повідомлення отримано.\n\n"
         "Підтвердити розсилку?",
         reply_markup=keyboard,
     )
-    from telegram.ext import CallbackQueryHandler, MessageHandler, filters
 # ============================================================
 # КНОПКИ ПІДТВЕРДЖЕННЯ РОЗСИЛКИ
 # ============================================================
@@ -909,32 +929,6 @@ async def broadcast_buttons(
     sent = 0
     failed = 0
 
-        # ----------------------------
-    # Відправка
-    # ----------------------------
-
-    if query.data != "broadcast_send":
-        return
-
-
-    if user_id not in broadcast_message:
-
-        await query.edit_message_text(
-            "❌ Повідомлення не знайдено."
-        )
-
-        return
-
-
-    from_chat_id, message_id = broadcast_message[user_id]
-
-
-    groups = get_groups()
-
-    sent = 0
-    failed = 0
-
-
     for group_id, title in groups:
 
         try:
@@ -945,8 +939,6 @@ async def broadcast_buttons(
                 message_id=message_id,
             )
 
-
-            # Зберігаємо ID відправленого повідомлення
             with sqlite3.connect(DATABASE) as conn:
 
                 conn.execute(
@@ -955,33 +947,25 @@ async def broadcast_buttons(
                         group_id,
                         message_id
                     )
-                    VALUES (?,?)
+                    VALUES (?, ?)
                     """,
                     (
                         group_id,
-                        msg.message_id
-                    )
+                        msg.message_id,
+                    ),
                 )
 
                 conn.commit()
 
-
             sent += 1
-
 
         except Exception as e:
 
-            print(
-                f"{title}: {e}"
-            )
+            print(f"{title}: {e}")
 
             failed += 1
 
-
-
-    # Видаляємо тимчасове повідомлення
     del broadcast_message[user_id]
-
 
     await query.edit_message_text(
         f"""
@@ -992,7 +976,6 @@ async def broadcast_buttons(
 📂 Всього груп: {len(groups)}
 """
     )
-
 # ============================================================
 # УДАЛЕНИЕ ПО CHAT_ID И MESSAGE_ID
 # ============================================================
