@@ -410,7 +410,8 @@ async def start(
     "/addgroup — додати поточну групу\n"
     "/excel — експорт Excel\n"
     "/broadcast — розсилка\n"
-    "/deletebroadcast — видалити останню розсилку"
+    "/deletebroadcast — видалити останню розсилку\n"
+    "/del — видалити переслане повідомлення"
 )
 
     await update.message.reply_text(text)
@@ -785,6 +786,9 @@ broadcast_wait = {}
 # Збережене повідомлення
 broadcast_message = {}
 
+# Повідомлення для ручного видалення
+delete_message_cache = {}
+
 
 # ============================================================
 # КОМАНДА /broadcast
@@ -905,25 +909,79 @@ async def broadcast_buttons(
     sent = 0
     failed = 0
 
+        # ----------------------------
+    # Відправка
+    # ----------------------------
+
+    if query.data != "broadcast_send":
+        return
+
+
+    if user_id not in broadcast_message:
+
+        await query.edit_message_text(
+            "❌ Повідомлення не знайдено."
+        )
+
+        return
+
+
+    from_chat_id, message_id = broadcast_message[user_id]
+
+
+    groups = get_groups()
+
+    sent = 0
+    failed = 0
+
+
     for group_id, title in groups:
 
         try:
 
-            await context.bot.copy_message(
+            msg = await context.bot.copy_message(
                 chat_id=group_id,
                 from_chat_id=from_chat_id,
                 message_id=message_id,
             )
 
+
+            # Зберігаємо ID відправленого повідомлення
+            with sqlite3.connect(DATABASE) as conn:
+
+                conn.execute(
+                    """
+                    INSERT INTO last_broadcast(
+                        group_id,
+                        message_id
+                    )
+                    VALUES (?,?)
+                    """,
+                    (
+                        group_id,
+                        msg.message_id
+                    )
+                )
+
+                conn.commit()
+
+
             sent += 1
+
 
         except Exception as e:
 
-            print(f"{title}: {e}")
+            print(
+                f"{title}: {e}"
+            )
 
             failed += 1
 
+
+
+    # Видаляємо тимчасове повідомлення
     del broadcast_message[user_id]
+
 
     await query.edit_message_text(
         f"""
@@ -935,6 +993,59 @@ async def broadcast_buttons(
 """
     )
 
+# ============================================================
+# УДАЛЕНИЕ ПО CHAT_ID И MESSAGE_ID
+# ============================================================
+
+async def delete_by_id(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    if not is_admin(update.effective_user.id):
+        return
+
+
+    if len(context.args) != 2:
+
+        await update.message.reply_text(
+            "❌ Формат:\n"
+            "/delete_id CHAT_ID MESSAGE_ID\n\n"
+            "Пример:\n"
+            "/delete_id -1001234567890 456"
+        )
+
+        return
+
+
+    try:
+
+        chat_id = int(context.args[0])
+        message_id = int(context.args[1])
+
+
+        await context.bot.delete_message(
+            chat_id=chat_id,
+            message_id=message_id
+        )
+
+
+        await update.message.reply_text(
+            "🗑 Сообщение удалено."
+        )
+
+
+    except Exception as e:
+
+        print(
+            "Ошибка удаления:",
+            e
+        )
+
+
+        await update.message.reply_text(
+            f"❌ Ошибка:\n{e}"
+        )
 # ============================================================
 # ВИДАЛЕННЯ ОСТАННЬОЇ РОЗСИЛКИ
 # ============================================================
@@ -1009,7 +1120,57 @@ async def error_handler(
         exc_info=context.error
     )
 
+# ============================================================
+# УДАЛЕНИЕ ПЕРЕСЛАННОГО СООБЩЕНИЯ
+# ============================================================
 
+async def delete_forwarded_message(
+    update: Update,
+    context: ContextTypes.DEFAULT_TYPE,
+):
+
+    user_id = update.effective_user.id
+
+
+    if not is_admin(user_id):
+        return
+
+
+    if user_id not in delete_message_cache:
+
+        await update.message.reply_text(
+            "❌ Сначала перешли сообщение."
+        )
+
+        return
+
+
+    chat_id, message_id = delete_message_cache[user_id]
+
+
+    try:
+
+        await context.bot.delete_message(
+            chat_id=chat_id,
+            message_id=message_id
+        )
+
+
+        await update.message.reply_text(
+            "🗑 Сообщение удалено."
+        )
+
+
+        del delete_message_cache[user_id]
+
+
+    except Exception as e:
+
+        print(e)
+
+        await update.message.reply_text(
+            f"❌ Ошибка удаления:\n{e}"
+        )
 
 # ============================================================
 # ЗАПУСК БОТА
@@ -1031,7 +1192,9 @@ def main():
     )
 
 
-    app.add_error_handler(error_handler)
+    app.add_error_handler(
+        error_handler
+    )
 
 
     # ========================================================
@@ -1039,45 +1202,128 @@ def main():
     # ========================================================
 
     app.add_handler(
-        CommandHandler("start", start)
+        CommandHandler(
+            "start",
+            start
+        )
     )
 
     app.add_handler(
-        CommandHandler("groups", groups)
+        CommandHandler(
+            "groups",
+            groups
+        )
     )
 
     app.add_handler(
-        CommandHandler("stats", stats)
+        CommandHandler(
+            "stats",
+            stats
+        )
     )
 
     app.add_handler(
-        CommandHandler("addgroup", addgroup)
+        CommandHandler(
+            "addgroup",
+            addgroup
+        )
     )
 
     app.add_handler(
-        CommandHandler("excel", excel)
+        CommandHandler(
+            "excel",
+            excel
+        )
     )
 
     app.add_handler(
-        CommandHandler("broadcast", broadcast)
+        CommandHandler(
+            "broadcast",
+            broadcast
+        )
     )
 
     app.add_handler(
-        CommandHandler("deletebroadcast", deletebroadcast)
+        CommandHandler(
+            "deletebroadcast",
+            deletebroadcast
+        )
     )
 
+    app.add_handler(
+    CommandHandler(
+        "delete_id",
+        delete_by_id
+    )
+)
+
+
+    # ========================================================
+    # Получение сообщения для рассылки
+    # ========================================================
+
+
+    app.add_handler(
+        MessageHandler(
+            ~filters.COMMAND & ~filters.FORWARDED,
+            receive_broadcast
+        )
+    )
+
+
+    # ========================================================
+    # Кнопки подтверждения рассылки
+    # ========================================================
+
+    app.add_handler(
+        CallbackQueryHandler(
+            broadcast_buttons
+        )
+    )
+
+
+    # ========================================================
+    # Вход / выход участников
+    # ========================================================
+
+    app.add_handler(
+        ChatMemberHandler(
+            chat_member_update,
+            ChatMemberHandler.CHAT_MEMBER
+        )
+    )
+
+
+    print(
+        "🤖 БОТ УСПІШНО ЗАПУЩЕНИЙ"
+    )
+
+
+    # Запуск
+    app.run_polling(
+        drop_pending_updates=True
+    )
+
+
+# ============================================================
+# START
+# ============================================================
+
+if __name__ == "__main__":
+    main()
 
     # ========================================================
     # Отримання тексту для розсилки
     # ========================================================
 
-    app.add_handler(
-        MessageHandler(
-            ~filters.COMMAND,
-            receive_broadcast
-        )
-    )
-
+    MessageHandler(
+    filters.FORWARDED & ~filters.COMMAND,
+    save_delete_message,
+)
+    MessageHandler(
+    ~filters.COMMAND & ~filters.FORWARDED,
+    receive_broadcast,
+)
 
     # ========================================================
     # Кнопки підтвердження
