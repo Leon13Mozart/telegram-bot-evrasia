@@ -42,9 +42,7 @@ TOKEN = os.getenv(
 
 ADMINS = [
     929200380,
-    395523040,
-    393572069, 
-    856301947
+    395523040
 ]
 
 
@@ -494,84 +492,52 @@ async def excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     ws["A3"].font = Font(bold=True)
     ws["A4"].font = Font(italic=True)
 
-    headers = [
-        "Група",
-        "Тиждень (+)",
-        "Тиждень (-)",
-        "Місяць (+)",
-        "Місяць (-)",
-        "Загалом (+)",
-        "Загалом (-)"
-    ]
-
-    header_row = 6
-
-    for col, header in enumerate(headers, 1):
-
-        cell = ws.cell(row=header_row, column=col)
-
-        cell.value = header
-        cell.font = Font(bold=True)
-        cell.fill = PatternFill(
-            fill_type="solid",
-            start_color="4F81BD"
-        )
-        cell.alignment = Alignment(horizontal="center")
-
     row = 7
-
-    total_week_join = 0
-    total_week_leave = 0
-    total_month_join = 0
-    total_month_leave = 0
-    total_join = 0
-    total_leave = 0
 
     for group_id, title in groups:
 
-        week_join, week_leave = week_stats(group_id)
-
         month_join, month_leave = month_stats(group_id)
 
-        all_join = count_events(group_id, "join")
-        all_leave = count_events(group_id, "leave")
+        growth = month_join - month_leave
 
-        ws.cell(row=row, column=1).value = title
-        ws.cell(row=row, column=2).value = week_join
-        ws.cell(row=row, column=3).value = week_leave
-        ws.cell(row=row, column=4).value = month_join
-        ws.cell(row=row, column=5).value = month_leave
-        ws.cell(row=row, column=6).value = all_join
-        ws.cell(row=row, column=7).value = all_leave
-
-        total_week_join += week_join
-        total_week_leave += week_leave
-        total_month_join += month_join
-        total_month_leave += month_leave
-        total_join += all_join
-        total_leave += all_leave
+        ws.cell(row=row, column=1).value = f"🍣 {title}"
+        ws.cell(row=row, column=1).font = Font(
+            bold=True,
+            size=14
+        )
 
         row += 1
 
-    ws.cell(row=row, column=1).value = "РАЗОМ"
-    ws.cell(row=row, column=1).font = Font(bold=True)
+        data = [
+            ("📅 Період", f"{month_start} — {month_end}"),
+            ("➕ Додалося", month_join),
+            ("➖ Вийшло", month_leave),
+            ("📈 Приріст", growth),
+        ]
 
-    ws.cell(row=row, column=2).value = total_week_join
-    ws.cell(row=row, column=3).value = total_week_leave
-    ws.cell(row=row, column=4).value = total_month_join
-    ws.cell(row=row, column=5).value = total_month_leave
-    ws.cell(row=row, column=6).value = total_join
-    ws.cell(row=row, column=7).value = total_leave
+        for key, value in data:
+
+            ws.cell(row=row, column=1).value = key
+            ws.cell(row=row, column=2).value = value
+
+            row += 1
+
+        row += 2
 
     for column in ws.columns:
 
-        length = max(len(str(cell.value or "")) for cell in column)
+        length = max(
+            len(str(cell.value or ""))
+            for cell in column
+        )
 
         ws.column_dimensions[
             get_column_letter(column[0].column)
         ].width = length + 4
 
-    filename = f"Статистика_{now.strftime('%d-%m-%Y')}.xlsx"
+    filename = (
+        f"Статистика_{now.strftime('%d-%m-%Y')}.xlsx"
+    )
 
     wb.save(filename)
 
@@ -693,15 +659,6 @@ async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
         text += (
             f"🍣 <b>{title}</b>\n\n"
-
-            f"📅 <b>Сьогодні ({today_date})</b>\n"
-            f"➕ Додалося: {today_join}\n"
-            f"➖ Вийшло: {today_leave}\n\n"
-
-            f"📅 <b>Поточний тиждень</b>\n"
-            f"🗓 {week_start} — {week_end}\n"
-            f"➕ Додалося: {week_join}\n"
-            f"➖ Вийшло: {week_leave}\n\n"
 
             f"📅 <b>{month_name} {now.year}</b>\n"
             f"🗓 {month_start} — {month_end}\n"
