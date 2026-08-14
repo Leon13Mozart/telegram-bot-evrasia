@@ -2231,6 +2231,17 @@ async def receive_mk_schedule_text(
 
     keyboard = []
 
+    # Розробник і Керуючий можуть застосувати графік одразу до всіх груп.
+    if is_global_mk_role(user.id):
+        keyboard.append(
+            [
+                InlineKeyboardButton(
+                    "🌐 Усі групи",
+                    callback_data="mkschedgrp:all",
+                )
+            ]
+        )
+
     for group_id, title in groups_list:
 
         button_title = (
