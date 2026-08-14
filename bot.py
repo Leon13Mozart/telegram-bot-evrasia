@@ -2532,7 +2532,7 @@ async def sync_mk_registration_to_google(registration_id):
     try:
         _, payload = build_google_mk_payload(row)
 
-        timeout = httpx.Timeout(15.0, connect=8.0)
+        timeout = httpx.Timeout(8.0, connect=4.0)
         async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
             response = await client.get(GOOGLE_MK_WEB_APP_URL, params=payload)
             response.raise_for_status()
@@ -2620,11 +2620,32 @@ async def _complete_mk_registration_with_schedule(
         registration_id = cursor.lastrowid
         conn.commit()
 
-    refresh_mk_registrations_excel()
+    # Локальний Excel не повинен затримувати відповідь користувачу.
+    # Оновлюємо його у фоновому потоці, щоб openpyxl не блокував Telegram-бота.
+    try:
+        context.application.create_task(
+            asyncio.to_thread(refresh_mk_registrations_excel),
+            name=f"refresh-mk-excel-{registration_id}",
+        )
+    except Exception:
+        logging.exception(
+            "Не вдалося запустити фонове оновлення Excel для запису %s",
+            registration_id,
+        )
 
-    # Google-таблиця є додатковою синхронізацією: локальний запис уже збережений,
-    # тому збій мережі не скасовує реєстрацію.
-    await sync_mk_registration_to_google(registration_id)
+    # Google Sheets також синхронізуємо у фоні.
+    # Запис уже надійно збережений у SQLite, тому користувач не чекає
+    # відповіді Google Apps Script і одразу отримує підтвердження.
+    try:
+        context.application.create_task(
+            sync_mk_registration_to_google(registration_id),
+            name=f"google-mk-sync-{registration_id}",
+        )
+    except Exception:
+        logging.exception(
+            "Не вдалося запустити Google sync для запису %s",
+            registration_id,
+        )
 
     _, confirmation_text = get_mk_settings(group_id)
     confirmation_text = format_mk_html(
