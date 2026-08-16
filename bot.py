@@ -664,16 +664,48 @@ DEFAULT_MK_RESPONSE = (
 DEFAULT_MK_CONFIRMATION = "✅ Запис для «{name}» підтверджено."
 
 MK_TRIGGER_RE = re.compile(
-    r"(?:^|\b)(?:"
-    r"записати|запишіть|запиши|записуйте|"
-    r"записать|запишите|запиши|"
-    r"хочу\s+записати|хочу\s+записать|"
-    r"можна\s+записати|можно\s+записать|"
-    r"прошу\s+записати|прошу\s+записать"
-    r")(?:\s+(?:будь\s+ласка|пожалуйста))?"
-    r"(?:\s*[:,-]?\s*(.*?))?\s*[.!?]*\s*$",
+    r"(?:"
+    # Українська
+    r"\bзаписат(?:и|ись|ися)\b|"
+    r"\bзапиш(?:іть|и|емо|ете)\b|"
+    r"\bзаписуєт(?:е|ься)\b|"
+    r"\bзаписуйт(?:е|есь)\b|"
+    r"\bхоч(?:у|емо|емося|еться)\s+(?:записат(?:и|ись|ися)|на\s+майстер[-\s]?клас)\b|"
+    r"\bможна\s+(?:мене\s+|нас\s+|дитину\s+|дитину\s+мою\s+)?"
+    r"(?:записат(?:и|ись|ися)|записатися)\b|"
+    r"\bпотрібно\s+записат(?:и|ись|ися)\b|"
+    r"\bпрошу\s+записат(?:и|ись|ися)\b|"
+    r"\bхотіл(?:а|и|о)\s+б\s+записат(?:и|ись|ися)\b|"
+    r"\bчи\s+можна\s+(?:сьогодні\s+|на\s+сьогодні\s+|на\s+\d{1,2}[./]\d{1,2}\s+)?записат(?:ись|ися|и)\b|"
+    # Російська
+    r"\bзаписат(?:ь|ься)\b|"
+    r"\bзапиш(?:ите|и|ем|ете)\b|"
+    r"\bзаписыва(?:йте|йтесь|ете)\b|"
+    r"\bхоч(?:у|им|ется)\s+(?:записат(?:ь|ься)|на\s+мастер[-\s]?класс)\b|"
+    r"\bможно\s+(?:меня\s+|нас\s+|ребенка\s+|ребёнка\s+)?"
+    r"(?:записат(?:ь|ься))\b|"
+    r"\bнужно\s+записат(?:ь|ься)\b|"
+    r"\bпрошу\s+записат(?:ь|ься)\b|"
+    r"\bхотел(?:а|и|ось)\s+бы\s+записат(?:ь|ься)\b|"
+    r"\bможно\s+(?:сегодня\s+|на\s+сегодня\s+|на\s+\d{1,2}[./]\d{1,2}\s+)?записат(?:ься|ь)\b"
+    r")",
     re.IGNORECASE,
 )
+
+MK_NAME_AFTER_TRIGGER_RE = re.compile(
+    r"(?:"
+    r"запиш(?:іть|и|ите)|"
+    r"записат(?:и|ь)|"
+    r"прошу\s+записат(?:и|ь)|"
+    r"хочу\s+записат(?:и|ь)|"
+    r"хотим\s+записат(?:ь)|"
+    r"хочу\s+записать"
+    r")"
+    r"(?:\s+(?:будь\s+ласка|пожалуйста))?"
+    r"\s*[:,-]?\s*(.*)$",
+    re.IGNORECASE,
+)
+
 
 PHONE_RE = re.compile(
     r"(?<!\d)(?:\+?38[\s()\-]*0|0)[\s()\-]*\d{2}"
@@ -731,6 +763,74 @@ def save_mk_phone(user_id, phone_number):
 
 def clean_mk_name(raw_name):
     return raw_name.strip().strip('"\'«»„“”').strip()
+
+
+BOOKING_SERVICE_WORDS_RE = re.compile(
+    r"^(?:"
+    r"будь\s+ласка|пожалуйста|"
+    r"мене|меня|нас|"
+    r"дитину|ребенка|ребёнка|"
+    r"на\s+сьогодні|на\s+сегодня|сьогодні|сегодня|"
+    r"на\s+завтра|завтра|"
+    r"на\s+майстер[-\s]?клас|на\s+мастер[-\s]?класс|"
+    r"на\s+мк|"
+    r"на\s+\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?|"
+    r"на\s+цей\s+майстер[-\s]?клас|на\s+этот\s+мастер[-\s]?класс"
+    r")"
+    r"(?:\s*[?.!,]*)$",
+    re.IGNORECASE,
+)
+
+
+def extract_child_name_from_booking_text(text):
+    """
+    Повертає ім'я/імена дітей тільки якщо вони реально вказані.
+    Загальні фрази типу «можна на сьогодні записатися?» повертають "".
+    """
+    value = str(text or "").strip()
+    if not value:
+        return ""
+
+    name_match = MK_NAME_AFTER_TRIGGER_RE.search(value)
+    if not name_match:
+        return ""
+
+    candidate = clean_mk_name(name_match.group(1) or "")
+    candidate = re.sub(r"[?.!]+$", "", candidate).strip()
+
+    if not candidate:
+        return ""
+
+    # Не приймаємо службові слова та фрази за ім'я дитини.
+    if BOOKING_SERVICE_WORDS_RE.fullmatch(candidate):
+        return ""
+
+    lowered = candidate.casefold()
+
+    service_starts = (
+        "на сьогодні",
+        "на сегодня",
+        "сьогодні",
+        "сегодня",
+        "на завтра",
+        "завтра",
+        "на майстер клас",
+        "на майстер-клас",
+        "на мастер класс",
+        "на мастер-класс",
+        "на мк",
+    )
+    if lowered.startswith(service_starts):
+        return ""
+
+    # «запишіть нас/мене/дитину» — ім'я ще не вказано.
+    if lowered in {
+        "нас", "мене", "меня", "дитину", "ребенка", "ребёнка",
+        "будь ласка", "пожалуйста",
+    }:
+        return ""
+
+    return candidate
 
 
 def get_mk_settings(group_id):
@@ -1113,57 +1213,83 @@ async def mk_registration_trigger(update: Update, context: ContextTypes.DEFAULT_
 
     state_key = (chat.id, user.id)
 
-    # Якщо бот уже попросив ім'я, наступне текстове повідомлення цього
-    # користувача в цій групі вважаємо ім'ям дитини.
+    # Якщо бот уже попросив ім'я, наступне текстове повідомлення
+    # цього користувача в цій групі вважаємо ім'ям/іменами дітей.
     if state_key in mk_name_wait:
         state = mk_name_wait.get(state_key) or {}
         phone_number, name_text = extract_phone(message.text)
+        phone_number = phone_number or state.get("phone_number")
         child_name = clean_mk_name(name_text)
+
         if not child_name:
-            temp_message = await message.reply_text("Підкажіть ім'я дитини")
-            schedule_message_deletion(context, chat.id, temp_message.message_id)
+            temp_message = await message.reply_text(
+                "Підкажіть, будь ласка, ім'я дитини 👶"
+            )
+            schedule_message_deletion(
+                context,
+                chat.id,
+                temp_message.message_id,
+                delay=120,
+            )
             return
 
         mk_name_wait.pop(state_key, None)
-        # Службове питання бота можна прибрати, але повідомлення гостя залишаємо.
-        await safe_delete_message(context, chat.id, state.get("prompt_message_id"))
+
+        # Видаляємо тільки службове питання бота.
+        # Повідомлення гостя залишаємо в групі.
+        await safe_delete_message(
+            context,
+            chat.id,
+            state.get("prompt_message_id"),
+        )
+
         await _create_mk_request(
-            message, chat, user, child_name, context, phone_number
+            message,
+            chat,
+            user,
+            child_name,
+            context,
+            phone_number,
         )
         return
 
-    match = MK_TRIGGER_RE.search(message.text)
-    if not match:
+    # Реагуємо на будь-який зрозумілий нам намір записатися.
+    if not MK_TRIGGER_RE.search(message.text):
         return
 
-    raw_name = match.group(1) or ""
-    phone_number, raw_name = extract_phone(raw_name)
-    child_name = clean_mk_name(raw_name)
+    phone_number, text_without_phone = extract_phone(message.text)
+    child_name = extract_child_name_from_booking_text(text_without_phone)
 
-    # Прибираємо типові службові слова, якщо людина написала
-    # «Запишіть, будь ласка» без імені.
-    if child_name.lower() in {
-        "будь ласка", "пожалуйста", "дитину", "ребенка",
-        "нас", "мене", "меня",
-    }:
-        child_name = ""
-
+    # Якщо людина просто попросила записати, але не назвала дитину —
+    # обов'язково уточнюємо ім'я перед вибором майстер-класу.
     if not child_name:
-        prompt_message = await message.reply_text("Підкажіть ім'я дитини")
+        prompt_message = await message.reply_text(
+            "Підкажіть, будь ласка, ім'я дитини 👶"
+        )
+
         mk_name_wait[state_key] = {
             "prompt_message_id": prompt_message.message_id,
             "trigger_message_id": message.message_id,
+            "phone_number": phone_number,
         }
+
         schedule_message_deletion(
-            context, chat.id, prompt_message.message_id, delay=120
+            context,
+            chat.id,
+            prompt_message.message_id,
+            delay=120,
         )
-        schedule_message_deletion(
-            context, chat.id, message.message_id, delay=120
-        )
+
+        # Повідомлення гостя НЕ видаляємо.
         return
 
     await _create_mk_request(
-        message, chat, user, child_name, context, phone_number
+        message,
+        chat,
+        user,
+        child_name,
+        context,
+        phone_number,
     )
 
 
