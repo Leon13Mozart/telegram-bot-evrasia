@@ -56,7 +56,7 @@ from telegram.ext import (
 # НАЛАШТУВАННЯ
 # ============================================================
 
-TOKEN = os.getenv("BOT_TOKEN")
+TOKEN = os.getenv("8835839482:AAFQ0yWwNdZ7dHUzJKPernaOVo_HMUNL24g")
 
 ADMINS = [
     929200380,
