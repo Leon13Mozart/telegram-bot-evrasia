@@ -70,14 +70,14 @@ DATABASE = os.getenv("DATABASE_PATH", "telegram_stats.db")
 
 WEB_APP_URL = os.getenv(
     "WEB_APP_URL",
-    "https://evrasia-masterclass.web.app"
+    "https://api.185-237-96-40.sslip.io"
 ).rstrip("/")
 
 WEB_ALLOWED_ORIGINS = [
     origin.strip().rstrip("/")
     for origin in os.getenv(
         "WEB_ALLOWED_ORIGINS",
-        "https://evrasia-masterclass.web.app,https://evrasia-masterclass.firebaseapp.com",
+        "https://api.185-237-96-40.sslip.io,https://evrasia-masterclass.web.app,https://evrasia-masterclass.firebaseapp.com",
     ).split(",")
     if origin.strip()
 ]
@@ -4214,6 +4214,15 @@ def web_index():
     if not index_path.exists():
         raise HTTPException(status_code=500, detail="web/index.html не знайдено")
     return FileResponse(index_path)
+
+
+@web_app.get("/config.js")
+def web_config():
+    """Віддає конфіг фронтенду, якщо index.html його підключає."""
+    config_path = WEB_DIR / "config.js"
+    if not config_path.exists():
+        raise HTTPException(status_code=404, detail="web/config.js не знайдено")
+    return FileResponse(config_path, media_type="application/javascript")
 
 
 @web_app.get("/api/me")
