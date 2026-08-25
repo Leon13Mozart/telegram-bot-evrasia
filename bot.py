@@ -783,54 +783,95 @@ BOOKING_SERVICE_WORDS_RE = re.compile(
 
 
 def extract_child_name_from_booking_text(text):
-    """
-    Повертає ім'я/імена дітей тільки якщо вони реально вказані.
-    Загальні фрази типу «можна на сьогодні записатися?» повертають "".
-    """
+    """Витягує тільки ім'я/імена дітей із фрази запису."""
     value = str(text or "").strip()
     if not value:
         return ""
 
-    name_match = MK_NAME_AFTER_TRIGGER_RE.search(value)
-    if not name_match:
-        return ""
+    _, value = extract_phone(value)
 
-    candidate = clean_mk_name(name_match.group(1) or "")
-    candidate = re.sub(r"[?.!]+$", "", candidate).strip()
-
-    if not candidate:
-        return ""
-
-    # Не приймаємо службові слова та фрази за ім'я дитини.
-    if BOOKING_SERVICE_WORDS_RE.fullmatch(candidate):
-        return ""
-
-    lowered = candidate.casefold()
-
-    service_starts = (
-        "на сьогодні",
-        "на сегодня",
-        "сьогодні",
-        "сегодня",
-        "на завтра",
-        "завтра",
-        "на майстер клас",
-        "на майстер-клас",
-        "на мастер класс",
-        "на мастер-класс",
-        "на мк",
+    # Привітання.
+    value = re.sub(
+        r"^\s*(?:доброго\s+(?:дня|ранку|вечора)|добрий\s+(?:день|вечір)|"
+        r"доброе\s+утро|добрый\s+(?:день|вечер)|вітаю|здравствуйте|привет)"
+        r"\s*[,!.:\-–—]*\s*",
+        "",
+        value,
+        flags=re.IGNORECASE,
     )
-    if lowered.startswith(service_starts):
+
+    # Тригер запису.
+    value = re.sub(
+        r"^\s*(?:"
+        r"хочу\s+записат(?:и|ись|ися|ь|ься)|"
+        r"хотіл(?:а|и)?\s+б\s+записат(?:и|ись|ися)|"
+        r"хотел(?:а|и|ось)?\s+бы\s+записат(?:ь|ься)|"
+        r"можна\s+(?:мене\s+|нас\s+|дитину\s+|дітей\s+)?записат(?:и|ись|ися)|"
+        r"можно\s+(?:меня\s+|нас\s+|ребенка\s+|ребёнка\s+|детей\s+)?записат(?:ь|ься)|"
+        r"запиш(?:іть|и|ите|ем|емо)|записат(?:и|ь)|"
+        r"прошу\s+записат(?:и|ь)"
+        r")\s*[,!.:\-–—]*\s*",
+        "",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    # Дата/час/МК.
+    for pattern in (
+        r"\bна\s+сьогодні\b", r"\bна\s+сегодня\b",
+        r"\bсьогодні\b", r"\bсегодня\b",
+        r"\bна\s+завтра\b", r"\bзавтра\b",
+        r"\bна\s+неділю\b", r"\bна\s+воскресенье\b",
+        r"\bна\s+майстер[-\s]?клас\b", r"\bна\s+мастер[-\s]?класс\b",
+        r"\bна\s+мк\b",
+        r"\bна\s+\d{1,2}[./]\d{1,2}(?:[./]\d{2,4})?\b",
+    ):
+        value = re.sub(pattern, " ", value, flags=re.IGNORECASE)
+
+    # Ввічливість.
+    value = re.sub(
+        r"\b(?:будь\s*[- ]?\s*ласка|пожалуйста|прошу|дякую|спасибо)\b",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    # Кількість дітей.
+    value = re.sub(
+        r"\b(?:\d{1,2}|одна|один|два|дві|две|двоє|двое|"
+        r"три|троє|трое|чотири|четыре|четверо|"
+        r"п['ʼ]?ять|пять|п['ʼ]?ятеро|пятеро)\s+"
+        r"(?:дитину|дитини|дітей|діток|диток|ребенка|ребёнка|детей)\b",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    # Залишкові службові слова.
+    value = re.sub(
+        r"\b(?:дитину|дітей|діток|ребенка|ребёнка|детей|нас|мене|меня)\b",
+        " ",
+        value,
+        flags=re.IGNORECASE,
+    )
+
+    # Питання без імені.
+    if re.search(
+        r"\b(?:чи\s+записали|записали\s+дітей|записали\s+детей|"
+        r"можна\s+записатися|можно\s+записаться)\b",
+        value,
+        flags=re.IGNORECASE,
+    ):
         return ""
 
-    # «запишіть нас/мене/дитину» — ім'я ще не вказано.
-    if lowered in {
-        "нас", "мене", "меня", "дитину", "ребенка", "ребёнка",
-        "будь ласка", "пожалуйста",
-    }:
+    value = re.sub(r"\s+", " ", value)
+    value = value.strip(" ,;:.!?()[]{}'\"«»„“”")
+    value = re.sub(r"\s*[,;]\s*", ", ", value).strip()
+
+    if not value or BOOKING_SERVICE_WORDS_RE.fullmatch(value):
         return ""
 
-    return candidate
+    return clean_mk_name(value)
 
 
 def get_mk_settings(group_id):
@@ -1995,10 +2036,25 @@ def split_children_names(child_names):
 
 
 def normalized_children_names(child_names):
-    parts = split_children_names(child_names)
-    if parts:
-        return ", ".join(parts)
-    return clean_children_names_text(child_names)
+    """У Google childrenNames відправляємо тільки ім'я/імена."""
+    value = str(child_names or "").strip()
+    if not value:
+        return ""
+
+    cleaned = extract_child_name_from_booking_text(value)
+
+    # Якщо сюди вже прийшло просте ім'я без тригерної фрази.
+    if not cleaned:
+        cleaned = clean_children_names_text(value)
+
+    cleaned = re.sub(
+        r"^\s*(?:будь\s*[- ]?\s*ласка|пожалуйста)\s*[,;:\-–—]*\s*",
+        "",
+        cleaned,
+        flags=re.IGNORECASE,
+    ).strip()
+
+    return cleaned
 
 
 def _children_count(child_names):
