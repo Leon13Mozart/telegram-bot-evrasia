@@ -1,5 +1,6 @@
 import asyncio
 import calendar
+import csv
 import html
 import hashlib
 import hmac
@@ -13,6 +14,7 @@ import secrets
 import sqlite3
 import threading
 import httpx
+from io import StringIO
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -90,6 +92,32 @@ AUTO_REPORT_CHAT_IDS = ADMINS
 
 REPORT_HOUR = 23
 REPORT_MINUTE = 59
+
+
+# Google Apps Script, куди бот записує нові реєстрації.
+GOOGLE_MK_WEB_APP_URL = os.getenv(
+    "GOOGLE_MK_WEB_APP_URL",
+    "https://script.google.com/macros/s/AKfycbzHFmihuVlvb9fGDplo0Yxdw6-00y-UztV-VLMO/exec",
+).strip()
+
+# Існуюча Google-таблиця реєстрацій. Нову таблицю бот НЕ створює.
+GOOGLE_MK_SHEET_ID = os.getenv(
+    "GOOGLE_MK_SHEET_ID",
+    "1wy1a3aZ6w5B56R9vbWxuIq6qFcFzOiiOpMczF5frfJM",
+).strip()
+
+GOOGLE_MK_REGISTRATIONS_SHEET = os.getenv(
+    "GOOGLE_MK_REGISTRATIONS_SHEET",
+    "Всі реєстрації",
+).strip()
+
+# Не звертаємося до Google при кожному кліку на сайті.
+GOOGLE_MK_READ_CACHE_SECONDS = int(
+    os.getenv("GOOGLE_MK_READ_CACHE_SECONDS", "30")
+)
+
+_google_mk_read_lock = threading.RLock()
+_google_mk_last_read_at = 0.0
 
 
 # Відповідність назв Telegram-груп назвам ресторанів у Google-таблиці.
@@ -1868,6 +1896,30 @@ def init_mk_schedule_schema():
         _ensure_column(conn, "mk_registrations", "event_date", "TEXT")
         _ensure_column(conn, "mk_registrations", "event_title", "TEXT")
         _ensure_column(conn, "mk_registrations", "attendance_status", "TEXT NOT NULL DEFAULT 'yes'")
+        _ensure_column(conn, "mk_registrations", "google_source_key", "TEXT")
+
+        # Стан вихідної синхронізації бот -> Google.
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mk_google_sync(
+                registration_id INTEGER PRIMARY KEY,
+                synced INTEGER NOT NULL DEFAULT 0,
+                attempts INTEGER NOT NULL DEFAULT 0,
+                last_error TEXT,
+                synced_at TEXT
+            )
+            """
+        )
+
+        # Один і той самий рядок Google не імпортуємо повторно.
+        conn.execute(
+            """
+            CREATE UNIQUE INDEX IF NOT EXISTS
+                idx_mk_registrations_google_source_key
+            ON mk_registrations(google_source_key)
+            WHERE google_source_key IS NOT NULL
+            """
+        )
 
         conn.execute("PRAGMA journal_mode=WAL")
         conn.execute("PRAGMA busy_timeout=10000")
@@ -4093,6 +4145,421 @@ async def post_init(application):
     )
 
 
+
+# ============================================================
+# ІМПОРТ ІСНУЮЧИХ ЗАПИСІВ ІЗ GOOGLE SHEETS ДЛЯ MINI APP
+# ============================================================
+
+
+def _google_text(value):
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _google_key(value):
+    value = _google_text(value).casefold()
+    value = value.replace("’", "'").replace("ʼ", "'").replace("`", "'")
+    value = re.sub(r"[^0-9a-zа-яіїєґ' ]+", " ", value, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _google_phone_key(value):
+    digits = re.sub(r"\D", "", str(value or ""))
+    if digits.startswith("0") and len(digits) == 10:
+        digits = "38" + digits
+    return digits
+
+
+def _google_date_iso(value):
+    value = _google_text(value)
+    if not value:
+        return ""
+
+    # ISO datetime / ISO date.
+    iso_match = re.match(r"^(\d{4}-\d{2}-\d{2})", value)
+    if iso_match:
+        return iso_match.group(1)
+
+    for fmt in (
+        "%d.%m.%Y",
+        "%d/%m/%Y",
+        "%d-%m-%Y",
+        "%d.%m.%y",
+        "%m/%d/%Y",
+    ):
+        try:
+            return datetime.strptime(value, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    return ""
+
+
+def _google_created_at(value, event_date):
+    value = _google_text(value)
+    if value:
+        for fmt in (
+            "%d.%m.%Y %H:%M:%S",
+            "%d.%m.%Y %H:%M",
+            "%Y-%m-%d %H:%M:%S",
+            "%Y-%m-%dT%H:%M:%S",
+        ):
+            try:
+                return datetime.strptime(value[:19], fmt).strftime("%Y-%m-%d %H:%M:%S")
+            except ValueError:
+                pass
+
+    return f"{event_date} 00:00:00" if event_date else datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+
+
+def _google_registration_columns(headers):
+    """
+    Повертає індекси колонок головного листа.
+    Підтримує українські/російські/англійські заголовки та fallback по позиціях.
+    """
+    normalized = [_google_key(h).replace(" ", "") for h in headers]
+
+    aliases = {
+        "created": (
+            "датачасреєстрації", "датареєстрації", "часреєстрації",
+            "датавремярегистрации", "timestamp", "createdat",
+        ),
+        "restaurant": ("ресторан", "restaurant", "заклад"),
+        "event_date": (
+            "датамк", "датамайстеркласу", "датамайстеркласса",
+            "датаmasterclass", "date",
+        ),
+        "parent": (
+            "імябатьків", "імябатька", "батьки", "имяродителей",
+            "родители", "name", "guestname",
+        ),
+        "phone": ("телефон", "номер телефону", "номертелефону", "phone"),
+        "children_count": (
+            "кількістьдітей", "кводітей", "количестводетей", "children",
+        ),
+        "children_names": (
+            "іменадітей", "імядитини", "имена детей", "именадетей",
+            "childrennames", "childname",
+        ),
+    }
+
+    result = {}
+    for key, variants in aliases.items():
+        wanted = {_google_key(v).replace(" ", "") for v in variants}
+        for index, header in enumerate(normalized):
+            if header in wanted:
+                result[key] = index
+                break
+
+    # Структура наданої таблиці:
+    # дата/час, ресторан, дата МК, батьки, телефон, кількість, імена.
+    fallback = {
+        "created": 0,
+        "restaurant": 1,
+        "event_date": 2,
+        "parent": 3,
+        "phone": 4,
+        "children_count": 5,
+        "children_names": 6,
+    }
+    for key, index in fallback.items():
+        if key not in result and index < len(headers):
+            result[key] = index
+
+    return result
+
+
+def _google_cell(row, columns, key):
+    index = columns.get(key)
+    if index is None or index >= len(row):
+        return ""
+    return _google_text(row[index])
+
+
+def _google_sheet_csv_rows():
+    """Завантажує існуючий лист 'Всі реєстрації' як CSV."""
+    if not GOOGLE_MK_SHEET_ID:
+        return []
+
+    url = (
+        f"https://docs.google.com/spreadsheets/d/"
+        f"{GOOGLE_MK_SHEET_ID}/gviz/tq"
+    )
+
+    timeout = httpx.Timeout(8.0, connect=4.0)
+    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
+        response = client.get(
+            url,
+            params={
+                "tqx": "out:csv",
+                "sheet": GOOGLE_MK_REGISTRATIONS_SHEET,
+            },
+        )
+        response.raise_for_status()
+
+    content_type = (response.headers.get("content-type") or "").lower()
+    body_start = response.text[:300].casefold()
+
+    # Якщо Google повернув сторінку входу замість CSV.
+    if "text/html" in content_type and (
+        "accounts.google.com" in body_start
+        or "<html" in body_start
+    ):
+        raise RuntimeError(
+            "Google-таблиця недоступна для читання без авторизації. "
+            "Надайте доступ 'Усі, хто має посилання — Перегляд' "
+            "або окремий endpoint читання."
+        )
+
+    return list(csv.reader(StringIO(response.text)))
+
+
+def _google_restaurant_group_map():
+    result = {}
+    for group_id, title in get_groups():
+        restaurant = resolve_google_mk_restaurant(title)
+        result[_google_key(restaurant)] = (group_id, title)
+    return result
+
+
+def sync_google_sheet_registrations_to_local(force=False):
+    """
+    Підтягує записи з уже існуючої Google-таблиці в локальну SQLite.
+    Це дозволяє існуючому /api/registrations показувати і записи з бота,
+    і записи, які були створені безпосередньо через таблицю/форму.
+
+    При помилці Google сайт продовжує працювати з локальними записами.
+    """
+    global _google_mk_last_read_at
+
+    now_ts = time.time()
+    if (
+        not force
+        and _google_mk_last_read_at
+        and now_ts - _google_mk_last_read_at < GOOGLE_MK_READ_CACHE_SECONDS
+    ):
+        return 0
+
+    with _google_mk_read_lock:
+        now_ts = time.time()
+        if (
+            not force
+            and _google_mk_last_read_at
+            and now_ts - _google_mk_last_read_at < GOOGLE_MK_READ_CACHE_SECONDS
+        ):
+            return 0
+
+        try:
+            csv_rows = _google_sheet_csv_rows()
+        except Exception:
+            logging.exception("Google MK: не вдалося прочитати таблицю реєстрацій")
+            _google_mk_last_read_at = now_ts
+            return 0
+
+        if len(csv_rows) < 2:
+            _google_mk_last_read_at = now_ts
+            return 0
+
+        headers = csv_rows[0]
+        columns = _google_registration_columns(headers)
+        restaurant_map = _google_restaurant_group_map()
+        imported = 0
+
+        with sqlite3.connect(DATABASE, timeout=10) as conn:
+            conn.execute("PRAGMA busy_timeout=10000")
+
+            for csv_row in csv_rows[1:]:
+                restaurant = _google_cell(csv_row, columns, "restaurant")
+                event_date = _google_date_iso(
+                    _google_cell(csv_row, columns, "event_date")
+                )
+
+                if not restaurant or not event_date:
+                    continue
+
+                group_info = restaurant_map.get(_google_key(restaurant))
+                if not group_info:
+                    # Запис іншого ресторану, якого немає серед Telegram-груп бота.
+                    continue
+
+                group_id, group_title = group_info
+                parent_name = _google_cell(csv_row, columns, "parent")
+                phone_raw = _google_cell(csv_row, columns, "phone")
+                phone_key = _google_phone_key(phone_raw)
+                phone_number = normalize_phone(phone_raw) if phone_key else ""
+                child_name = _google_cell(csv_row, columns, "children_names")
+
+                # На сайті показуємо саме імена. Якщо в рядку вони не заповнені —
+                # не вигадуємо їх із кількості дітей.
+                if not child_name:
+                    child_name = "—"
+
+                created_at = _google_created_at(
+                    _google_cell(csv_row, columns, "created"),
+                    event_date,
+                )
+
+                source_text = "|".join(
+                    [
+                        _google_key(restaurant),
+                        event_date,
+                        phone_key,
+                        _google_key(parent_name),
+                        _google_key(child_name),
+                    ]
+                )
+                source_key = hashlib.sha256(
+                    source_text.encode("utf-8")
+                ).hexdigest()
+
+                existing_source = conn.execute(
+                    """
+                    SELECT id
+                    FROM mk_registrations
+                    WHERE google_source_key=?
+                    """,
+                    (source_key,),
+                ).fetchone()
+                if existing_source:
+                    continue
+
+                # Не дублюємо локальний запис бота, який уже відправився в Google.
+                candidates = conn.execute(
+                    """
+                    SELECT id, requester_name, child_name, phone_number
+                    FROM mk_registrations
+                    WHERE group_id=? AND event_date=?
+                    """,
+                    (group_id, event_date),
+                ).fetchall()
+
+                matched_id = None
+                for reg_id, local_parent, local_child, local_phone in candidates:
+                    same_phone = (
+                        phone_key
+                        and _google_phone_key(local_phone) == phone_key
+                    )
+                    same_parent = (
+                        _google_key(local_parent) == _google_key(parent_name)
+                    )
+                    same_child = (
+                        _google_key(local_child) == _google_key(child_name)
+                    )
+
+                    # Телефон + ім'я дитини достатні для надійного збігу;
+                    # якщо телефону немає — використовуємо батьків + дитину.
+                    if (
+                        (same_phone and same_child)
+                        or (not phone_key and same_parent and same_child)
+                    ):
+                        matched_id = reg_id
+                        break
+
+                if matched_id is not None:
+                    conn.execute(
+                        """
+                        UPDATE mk_registrations
+                        SET google_source_key=?
+                        WHERE id=? AND google_source_key IS NULL
+                        """,
+                        (source_key, matched_id),
+                    )
+                    # Не відправляємо цей рядок назад у Google повторно.
+                    conn.execute(
+                        """
+                        INSERT INTO mk_google_sync(
+                            registration_id, synced, attempts, last_error, synced_at
+                        )
+                        VALUES(?,1,0,NULL,?)
+                        ON CONFLICT(registration_id) DO UPDATE SET
+                            synced=1,
+                            last_error=NULL,
+                            synced_at=excluded.synced_at
+                        """,
+                        (
+                            matched_id,
+                            datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
+                        ),
+                    )
+                    continue
+
+                schedule_row = conn.execute(
+                    """
+                    SELECT title
+                    FROM mk_schedule
+                    WHERE group_id=? AND event_date=?
+                    ORDER BY id
+                    LIMIT 1
+                    """,
+                    (group_id, event_date),
+                ).fetchone()
+                event_title = schedule_row[0] if schedule_row else ""
+
+                cursor = conn.execute(
+                    """
+                    INSERT INTO mk_registrations(
+                        group_id,
+                        group_title,
+                        requester_id,
+                        requester_name,
+                        child_name,
+                        phone_number,
+                        created_at,
+                        event_date,
+                        event_title,
+                        attendance_status,
+                        google_source_key
+                    )
+                    VALUES(?,?,?,?,?,?,?,?,?,?,?)
+                    """,
+                    (
+                        group_id,
+                        group_title,
+                        0,
+                        parent_name or "—",
+                        child_name,
+                        phone_number,
+                        created_at,
+                        event_date,
+                        event_title,
+                        "yes",
+                        source_key,
+                    ),
+                )
+                registration_id = cursor.lastrowid
+
+                # Це вже запис із Google — не треба відправляти його назад.
+                conn.execute(
+                    """
+                    INSERT INTO mk_google_sync(
+                        registration_id, synced, attempts, last_error, synced_at
+                    )
+                    VALUES(?,1,0,NULL,?)
+                    ON CONFLICT(registration_id) DO UPDATE SET
+                        synced=1,
+                        last_error=NULL,
+                        synced_at=excluded.synced_at
+                    """,
+                    (
+                        registration_id,
+                        datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
+                    ),
+                )
+                imported += 1
+
+            conn.commit()
+
+        _google_mk_last_read_at = time.time()
+
+        if imported:
+            logging.info(
+                "Google MK: імпортовано %s нових записів для Mini App",
+                imported,
+            )
+
+        return imported
+
+
+
 # ============================================================
 # TELEGRAM MINI APP / WEB API
 # ============================================================
@@ -4270,6 +4737,10 @@ def web_dates(request: Request):
 @web_app.get("/api/restaurants")
 def web_restaurants(request: Request, date: str | None = None):
     current = _web_current_user(request)
+
+    # Додаємо в локальне представлення нові рядки з Google-таблиці.
+    sync_google_sheet_registrations_to_local()
+
     result = []
     with _web_db() as conn:
         for group_id, title in current["groups"]:
@@ -4295,6 +4766,11 @@ def web_registrations(
     q: str = "",
 ):
     current = _web_current_user(request)
+
+    # Підтягуємо записи, які існують у Google-таблиці, але могли
+    # бути створені не через Telegram-бота.
+    sync_google_sheet_registrations_to_local()
+
     allowed = _web_allowed_group_ids(current)
     if not allowed:
         return {"registrations": []}
