@@ -1,6 +1,11 @@
 import asyncio
 import calendar
 import html
+import hashlib
+import hmac
+import json
+import time
+from urllib.parse import parse_qsl
 import logging
 import os
 import re
@@ -26,8 +31,16 @@ from telegram import (
     ReplyKeyboardMarkup,
     ReplyKeyboardRemove,
     Update,
+    WebAppInfo,
 )
 from telegram.constants import ChatMemberStatus
+
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+import uvicorn
+
 from telegram.ext import (
     Application,
     CallbackQueryHandler,
@@ -43,10 +56,7 @@ from telegram.ext import (
 # НАЛАШТУВАННЯ
 # ============================================================
 
-TOKEN = os.getenv(
-    "BOT_TOKEN",
-    "8835839482:AAFQ0yWwNdZ7dHUzJKPernaOVo_HMUNL24g",
-)
+TOKEN = os.getenv("BOT_TOKEN")
 
 ADMINS = [
     929200380,
@@ -56,7 +66,17 @@ ADMINS = [
 DEVELOPER_ID = 929200380
 DEFAULT_MANAGER_ID = 395523040
 
-DATABASE = "telegram_stats.db"
+DATABASE = os.getenv("DATABASE_PATH", "telegram_stats.db")
+WEB_APP_URL = os.getenv("WEB_APP_URL", "https://evrasia-masterclass.web.app").rstrip("/")
+WEB_ALLOWED_ORIGINS = [
+    origin.strip().rstrip("/")
+    for origin in os.getenv(
+        "WEB_ALLOWED_ORIGINS",
+        "https://evrasia-masterclass.web.app,https://evrasia-masterclass.firebaseapp.com",
+    ).split(",")
+    if origin.strip()
+]
+WEB_DEBUG_USER_ID = os.getenv("WEB_DEBUG_USER_ID", "").strip()
 TIMEZONE = ZoneInfo("Europe/Kyiv")
 AUTO_REPORT_CHAT_IDS = ADMINS
 REPORT_HOUR = 23
@@ -1848,7 +1868,10 @@ def init_mk_schedule_schema():
 
         _ensure_column(conn, "mk_registrations", "event_date", "TEXT")
         _ensure_column(conn, "mk_registrations", "event_title", "TEXT")
+        _ensure_column(conn, "mk_registrations", "attendance_status", "TEXT NOT NULL DEFAULT 'yes'")
 
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA busy_timeout=10000")
         conn.commit()
 
     # Excel оновлюємо лише після успішного завершення міграції схеми.
@@ -3701,29 +3724,33 @@ def build_mk_registrations_excel_for_user(user_id):
 
 
 async def mk_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    """Надає посилання на єдину живу Google-таблицю реєстрацій МК."""
+    """Відкриває сайт майстер-класів у Telegram Mini App."""
     user_id = update.effective_user.id
 
     if not can_manage_mk(user_id) or update.effective_chat.type != "private":
         return
 
+    if not WEB_APP_URL:
+        await update.message.reply_text(
+            "❌ WEB_APP_URL не налаштовано. Додайте HTTPS-адресу сайту в змінні середовища."
+        )
+        return
+
     keyboard = InlineKeyboardMarkup(
-        [
-            [
-                InlineKeyboardButton(
-                    "📊 Відкрити таблицю реєстрацій МК",
-                    url=GOOGLE_MK_SHEET_URL,
-                )
-            ]
-        ]
+        [[
+            InlineKeyboardButton(
+                "🍣 Відкрити майстер-класи",
+                web_app=WebAppInfo(url=WEB_APP_URL),
+            )
+        ]]
     )
 
     await update.message.reply_text(
-        "📝 Таблиця реєстрацій майстер-класів\n\n"
-        "Нову таблицю бот не створює. Усі записи синхронізуються "
-        "з цією Google-таблицею.",
+        "📝 Майстер-класи\n\n"
+        "Сайт працює з тією самою базою даних, що й бот.",
         reply_markup=keyboard,
     )
+
 
 async def mk_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
@@ -3785,7 +3812,7 @@ def get_private_commands_for_role(role):
         BotCommand("setmkconfirm", "Налаштувати підтвердження МК"),
         BotCommand("setmkschedule", "Додати або змінити графік МК"),
         BotCommand("mklist", "Показати записи МК"),
-        BotCommand("mkexcel", "Отримати таблицю МК"),
+        BotCommand("mkexcel", "Відкрити сайт МК"),
         BotCommand("cancelmk", "Скасувати поточне налаштування"),
     ]
 
@@ -4068,14 +4095,316 @@ async def post_init(application):
 
 
 # ============================================================
+# TELEGRAM MINI APP / WEB API
+# ============================================================
+
+WEB_DIR = Path(__file__).resolve().parent / "web"
+web_app = FastAPI(title="Євразія — Майстер-класи")
+
+# Firebase Hosting працює на іншому домені, тому дозволяємо його origin для API.
+web_app.add_middleware(
+    CORSMiddleware,
+    allow_origins=WEB_ALLOWED_ORIGINS,
+    allow_credentials=False,
+    allow_methods=["GET", "PATCH", "OPTIONS"],
+    allow_headers=["Content-Type", "X-Telegram-Init-Data"],
+)
+
+if (WEB_DIR / "static").exists():
+    web_app.mount(
+        "/static",
+        StaticFiles(directory=str(WEB_DIR / "static")),
+        name="static",
+    )
+
+
+def _web_db():
+    conn = sqlite3.connect(DATABASE, timeout=10)
+    conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA busy_timeout=10000")
+    return conn
+
+
+def _verify_telegram_init_data(init_data: str):
+    """Перевіряє Telegram WebApp initData та повертає Telegram user."""
+    if not init_data:
+        if WEB_DEBUG_USER_ID:
+            return {"id": int(WEB_DEBUG_USER_ID), "first_name": "Debug"}
+        raise HTTPException(status_code=401, detail="Відкрийте сайт через Telegram-бота")
+
+    if not TOKEN:
+        raise HTTPException(status_code=500, detail="BOT_TOKEN не налаштовано")
+
+    values = dict(parse_qsl(init_data, keep_blank_values=True))
+    received_hash = values.pop("hash", None)
+    if not received_hash:
+        raise HTTPException(status_code=401, detail="Некоректні дані Telegram")
+
+    data_check_string = "\n".join(
+        f"{key}={values[key]}" for key in sorted(values)
+    )
+    secret_key = hmac.new(
+        b"WebAppData",
+        TOKEN.encode("utf-8"),
+        hashlib.sha256,
+    ).digest()
+    calculated_hash = hmac.new(
+        secret_key,
+        data_check_string.encode("utf-8"),
+        hashlib.sha256,
+    ).hexdigest()
+
+    if not hmac.compare_digest(calculated_hash, received_hash):
+        raise HTTPException(status_code=401, detail="Підпис Telegram не пройшов перевірку")
+
+    try:
+        auth_date = int(values.get("auth_date", "0"))
+    except ValueError:
+        raise HTTPException(status_code=401, detail="Некоректна дата авторизації")
+
+    if not auth_date or abs(int(time.time()) - auth_date) > 86400:
+        raise HTTPException(status_code=401, detail="Сеанс Telegram застарів. Відкрийте Mini App знову")
+
+    try:
+        user = json.loads(values.get("user", "{}"))
+    except json.JSONDecodeError:
+        raise HTTPException(status_code=401, detail="Некоректні дані користувача")
+
+    if not user.get("id"):
+        raise HTTPException(status_code=401, detail="Telegram ID не знайдено")
+    return user
+
+
+def _web_current_user(request: Request):
+    tg_user = _verify_telegram_init_data(
+        request.headers.get("X-Telegram-Init-Data", "")
+    )
+    user_id = int(tg_user["id"])
+    role = get_user_role(user_id)
+    if role not in {ROLE_DEVELOPER, ROLE_MANAGER, ROLE_ADMIN}:
+        raise HTTPException(status_code=403, detail="У вас немає доступу до майстер-класів")
+
+    groups = get_accessible_groups(user_id)
+    return {
+        "id": user_id,
+        "role": role,
+        "telegram": tg_user,
+        "groups": groups,
+    }
+
+
+def _web_allowed_group_ids(current_user):
+    return [group_id for group_id, _title in current_user["groups"]]
+
+
+def _web_children_count(child_names):
+    try:
+        return infer_children_count(child_names)
+    except Exception:
+        return 1
+
+
+@web_app.get("/api/health")
+def web_health():
+    return {"ok": True, "service": "evrasia-masterclass-api"}
+
+
+@web_app.get("/")
+def web_index():
+    index_path = WEB_DIR / "index.html"
+    if not index_path.exists():
+        raise HTTPException(status_code=500, detail="web/index.html не знайдено")
+    return FileResponse(index_path)
+
+
+@web_app.get("/api/me")
+def web_me(request: Request):
+    current = _web_current_user(request)
+    display_name = get_custom_user_name(current["id"]) or current["telegram"].get("first_name", "")
+    return {
+        "id": current["id"],
+        "name": display_name,
+        "role": current["role"],
+        "restaurants": [
+            {"id": group_id, "name": title}
+            for group_id, title in current["groups"]
+        ],
+    }
+
+
+@web_app.get("/api/dates")
+def web_dates(request: Request):
+    current = _web_current_user(request)
+    allowed = _web_allowed_group_ids(current)
+    if not allowed:
+        return {"dates": []}
+
+    placeholders = ",".join("?" for _ in allowed)
+    with _web_db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT DISTINCT event_date
+            FROM (
+                SELECT event_date FROM mk_schedule
+                WHERE group_id IN ({placeholders})
+                UNION
+                SELECT event_date FROM mk_registrations
+                WHERE group_id IN ({placeholders})
+            )
+            WHERE event_date IS NOT NULL AND event_date <> ''
+            ORDER BY event_date
+            """,
+            [*allowed, *allowed],
+        ).fetchall()
+    return {"dates": [row[0] for row in rows]}
+
+
+@web_app.get("/api/restaurants")
+def web_restaurants(request: Request, date: str | None = None):
+    current = _web_current_user(request)
+    result = []
+    with _web_db() as conn:
+        for group_id, title in current["groups"]:
+            if date:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM mk_registrations WHERE group_id=? AND event_date=?",
+                    (group_id, date),
+                ).fetchone()[0]
+            else:
+                count = conn.execute(
+                    "SELECT COUNT(*) FROM mk_registrations WHERE group_id=?",
+                    (group_id,),
+                ).fetchone()[0]
+            result.append({"id": group_id, "name": title, "count": count})
+    return {"restaurants": result}
+
+
+@web_app.get("/api/registrations")
+def web_registrations(
+    request: Request,
+    date: str,
+    group_id: int | None = None,
+    q: str = "",
+):
+    current = _web_current_user(request)
+    allowed = _web_allowed_group_ids(current)
+    if not allowed:
+        return {"registrations": []}
+
+    if group_id is not None and group_id not in allowed:
+        raise HTTPException(status_code=403, detail="Немає доступу до цього ресторану")
+
+    query = """
+        SELECT id, group_id, group_title, requester_name, child_name,
+               phone_number, event_date, event_title,
+               COALESCE(attendance_status, 'yes') AS attendance_status
+        FROM mk_registrations
+        WHERE event_date=?
+    """
+    params = [date]
+
+    if group_id is not None:
+        query += " AND group_id=?"
+        params.append(group_id)
+    else:
+        placeholders = ",".join("?" for _ in allowed)
+        query += f" AND group_id IN ({placeholders})"
+        params.extend(allowed)
+
+    search = (q or "").strip()
+    if search:
+        query += """
+            AND (
+                COALESCE(requester_name,'') LIKE ? OR
+                COALESCE(child_name,'') LIKE ? OR
+                COALESCE(phone_number,'') LIKE ? OR
+                COALESCE(group_title,'') LIKE ?
+            )
+        """
+        like = f"%{search}%"
+        params.extend([like, like, like, like])
+
+    query += " ORDER BY group_title COLLATE NOCASE, id"
+
+    with _web_db() as conn:
+        rows = conn.execute(query, params).fetchall()
+
+    registrations = []
+    for row in rows:
+        phone = row["phone_number"] or ""
+        registrations.append({
+            "id": row["id"],
+            "group_id": row["group_id"],
+            "restaurant": row["group_title"] or str(row["group_id"]),
+            "guest_name": row["requester_name"] or "—",
+            "child_name": row["child_name"] or "—",
+            "children": _web_children_count(row["child_name"]),
+            "phone": phone,
+            "status": row["attendance_status"] if row["attendance_status"] in {"yes", "no"} else "yes",
+        })
+    return {"registrations": registrations}
+
+
+@web_app.patch("/api/registrations/{registration_id}/status")
+async def web_update_status(registration_id: int, request: Request):
+    current = _web_current_user(request)
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Некоректний JSON")
+
+    status = payload.get("status")
+    if status not in {"yes", "no"}:
+        raise HTTPException(status_code=400, detail="Статус має бути yes або no")
+
+    with _web_db() as conn:
+        row = conn.execute(
+            "SELECT group_id FROM mk_registrations WHERE id=?",
+            (registration_id,),
+        ).fetchone()
+        if not row:
+            raise HTTPException(status_code=404, detail="Запис не знайдено")
+        if row["group_id"] not in _web_allowed_group_ids(current):
+            raise HTTPException(status_code=403, detail="Немає доступу до цього ресторану")
+
+        conn.execute(
+            "UPDATE mk_registrations SET attendance_status=? WHERE id=?",
+            (status, registration_id),
+        )
+        conn.commit()
+
+    return {"ok": True, "status": status}
+
+
+def start_web_server():
+    port = int(os.getenv("PORT", "8000"))
+    thread = threading.Thread(
+        target=lambda: uvicorn.run(
+            web_app,
+            host="0.0.0.0",
+            port=port,
+            log_level="info",
+        ),
+        daemon=True,
+        name="telegram-mini-app-web",
+    )
+    thread.start()
+    return thread
+
+
+# ============================================================
 # ЗАПУСК БОТА
 # ============================================================
 
 def main():
+    if not TOKEN:
+        raise RuntimeError("BOT_TOKEN не заданий у змінних середовища")
+
     init_db()
     init_access_schema()
     init_mk_schedule_schema()
     check_db()
+    start_web_server()
 
     app = (
         Application.builder()
