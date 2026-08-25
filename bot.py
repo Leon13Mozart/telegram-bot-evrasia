@@ -310,8 +310,6 @@ def get_groups():
 # ============================================================
 
 
-def is_admin(user_id):
-    return user_id in ADMINS
 
 
 # ============================================================
@@ -340,33 +338,6 @@ async def chat_member_update(update: Update, context: ContextTypes.DEFAULT_TYPE)
 # ============================================================
 
 
-async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    # Посилання для завершення запису на майстер-клас доступне всім користувачам.
-    if context.args and context.args[0].startswith("mk_"):
-        token = context.args[0][3:]
-        await begin_mk_private_registration(update, context, token)
-        return
-
-    if not is_admin(update.effective_user.id):
-        return
-
-    text = (
-        "📊 Бот статистики працює.\n\n"
-        "Доступні команди:\n\n"
-        "/groups — список груп\n"
-        "/stats — статистика\n"
-        "/addgroup — додати поточну групу\n"
-        "/excel — експорт Excel\n"
-        "Автозвіт — останнього дня місяця о 23:59\n"
-        "/broadcast — розсилка\n"
-        "/deletebroadcast — видалити останню розсилку\n"
-        "/delete_id — видалити повідомлення за ID\n\n"
-        "Запис на МК:\n"
-        "/setmkresponse ТЕКСТ — налаштувати відповідь у групі\n"
-        "/setmkconfirm ТЕКСТ — налаштувати підтвердження\n"
-        "/mklist — останні записи"
-    )
-    await update.message.reply_text(text)
 
 
 async def addgroup(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -598,40 +569,6 @@ async def monthly_report_scheduler(application):
         await send_automatic_monthly_report(application)
 
 
-async def post_init(application):
-    # Швидкий список команд у меню Telegram для особистого чату.
-    private_commands = [
-        BotCommand("start", "Відкрити меню бота"),
-        BotCommand("groups", "Показати список груп"),
-        BotCommand("stats", "Показати статистику груп"),
-        BotCommand("excel", "Отримати Excel-звіт"),
-        BotCommand("broadcast", "Створити розсилку"),
-        BotCommand("deletebroadcast", "Видалити останню розсилку"),
-        BotCommand("delete_id", "Видалити повідомлення за ID"),
-        BotCommand("setmkresponse", "Налаштувати відповідь для МК"),
-        BotCommand("setmkconfirm", "Налаштувати підтвердження МК"),
-        BotCommand("mklist", "Показати останні записи на МК"),
-        BotCommand("cancelmk", "Скасувати налаштування МК"),
-    ]
-
-    # У групах залишаються тільки команди, які не розкривають адмін-налаштування.
-    group_commands = [
-        BotCommand("addgroup", "Додати поточну групу"),
-    ]
-
-    await application.bot.set_my_commands(
-        private_commands,
-        scope=BotCommandScopeAllPrivateChats(),
-    )
-    await application.bot.set_my_commands(
-        group_commands,
-        scope=BotCommandScopeAllGroupChats(),
-    )
-
-    application.create_task(
-        monthly_report_scheduler(application),
-        name="monthly-report-scheduler",
-    )
 
 
 async def groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -987,12 +924,6 @@ async def set_mk_confirmation(update: Update, context: ContextTypes.DEFAULT_TYPE
     await start_mk_setting(update, "confirmation")
 
 
-async def cancel_mk_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-
-    mk_config_state.pop(update.effective_user.id, None)
-    await update.message.reply_text("❌ Налаштування МК скасовано.")
 
 
 async def receive_mk_setting_text(
@@ -1239,54 +1170,6 @@ async def _complete_mk_registration(
 
 
 
-async def _create_mk_request(
-    message, chat, user, child_name, context, phone_number=None
-):
-    # Використовуємо номер із повідомлення або раніше збережений за Telegram ID.
-    phone_number = phone_number or get_saved_mk_phone(user.id)
-    if phone_number:
-        await _complete_mk_registration(
-            message, chat, user, child_name, phone_number, context
-        )
-        return
-
-    register_group(chat)
-    token = secrets.token_urlsafe(18)
-    user_name = user.full_name or str(user.id)
-
-    with sqlite3.connect(DATABASE) as conn:
-        conn.execute(
-            """
-            INSERT INTO mk_pending(
-                token, group_id, group_title, requester_id, requester_name,
-                child_name, source_message_id, created_at, status
-            )
-            VALUES(?,?,?,?,?,?,?,?,?)
-            """,
-            (
-                token, chat.id, chat.title, user.id, user_name, child_name,
-                message.message_id,
-                datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
-                "waiting_start",
-            ),
-        )
-        conn.commit()
-
-    bot_info = await context.bot.get_me()
-    private_url = f"https://t.me/{bot_info.username}?start=mk_{token}"
-    response_text, _ = get_mk_settings(chat.id)
-    response_text = format_mk_html(
-        response_text, child_name, user_name, chat.title or ""
-    )
-
-    keyboard = InlineKeyboardMarkup(
-        [[InlineKeyboardButton("📱 Надіслати номер телефону", url=private_url)]]
-    )
-    await message.reply_text(
-        response_text,
-        reply_markup=keyboard,
-        parse_mode="HTML",
-    )
 
 
 async def mk_registration_trigger(update: Update, context: ContextTypes.DEFAULT_TYPE):
@@ -1381,256 +1264,11 @@ async def mk_registration_trigger(update: Update, context: ContextTypes.DEFAULT_
     )
 
 
-async def begin_mk_private_registration(update, context, token):
-    message = update.effective_message
-    user = update.effective_user
-    chat = update.effective_chat
-
-    if chat.type != "private":
-        return
-
-    with sqlite3.connect(DATABASE) as conn:
-        pending = conn.execute(
-            """
-            SELECT group_id, group_title, requester_id, requester_name, child_name, status
-            FROM mk_pending
-            WHERE token=?
-            """,
-            (token,),
-        ).fetchone()
-
-        if not pending:
-            await message.reply_text("❌ Посилання недійсне або запис уже завершено.")
-            return
-
-        group_id, group_title, requester_id, requester_name, child_name, status = pending
-        if requester_id != user.id:
-            await message.reply_text("❌ Це посилання створене для іншого користувача.")
-            return
-        if status == "completed":
-            await message.reply_text("✅ Цей запис уже завершено.")
-            return
-
-        saved_phone = get_saved_mk_phone(user.id)
-        if saved_phone:
-            created_at = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
-            conn.execute(
-                """
-                INSERT INTO mk_registrations(
-                    group_id, group_title, requester_id, requester_name,
-                    child_name, phone_number, created_at
-                )
-                VALUES(?,?,?,?,?,?,?)
-                """,
-                (
-                    group_id, group_title, user.id, requester_name,
-                    child_name, saved_phone, created_at,
-                ),
-            )
-            conn.execute(
-                "UPDATE mk_pending SET status='completed' WHERE token=?",
-                (token,),
-            )
-            conn.commit()
-        else:
-            created_at = None
-
-        if saved_phone:
-            # Завершення поза транзакцією: повідомлення в групу та адміністраторам.
-            pass
-        else:
-            conn.execute(
-                "UPDATE mk_pending SET status='waiting_contact' WHERE token=?",
-                (token,),
-            )
-            conn.execute(
-                """
-                INSERT INTO mk_user_state(user_id, token)
-                VALUES(?,?)
-                ON CONFLICT(user_id) DO UPDATE SET token=excluded.token
-                """,
-                (user.id, token),
-            )
-            conn.commit()
-
-    if saved_phone:
-        _, confirmation_text = get_mk_settings(group_id)
-        confirmation_text = format_mk_html(
-            confirmation_text, child_name, requester_name, group_title or ""
-        )
-        try:
-            await context.bot.send_message(
-            chat_id=group_id,
-            text=confirmation_text,
-            parse_mode="HTML",
-        )
-        except Exception:
-            logging.exception("Не вдалося надіслати підтвердження в групу %s", group_id)
-
-        await message.reply_text(
-            f"✅ Запис для «{child_name}» створено. Використано збережений номер."
-        )
-        return
-
-    keyboard = ReplyKeyboardMarkup(
-        [[KeyboardButton("📱 Надіслати свій номер", request_contact=True)]],
-        resize_keyboard=True,
-        one_time_keyboard=True,
-        input_field_placeholder="Натисніть кнопку нижче",
-    )
-    await message.reply_text(
-        f"Запис для «{child_name}» у групі «{group_title}».\n\n"
-        "Telegram не дозволяє боту автоматично прочитати прихований номер. "
-        "Натисніть кнопку та поділіться своїм номером.",
-        reply_markup=keyboard,
-    )
-
-
-async def receive_mk_contact(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    message = update.effective_message
-    user = update.effective_user
-    contact = message.contact if message else None
-
-    if not message or not user or not contact:
-        return
-    if update.effective_chat.type != "private":
-        return
-
-    # Не приймаємо чужу контактну картку замість номера автора запиту.
-    if contact.user_id is not None and contact.user_id != user.id:
-        await message.reply_text("❌ Будь ласка, надішліть саме свій номер кнопкою нижче.")
-        return
-
-    with sqlite3.connect(DATABASE) as conn:
-        state = conn.execute(
-            "SELECT token FROM mk_user_state WHERE user_id=?",
-            (user.id,),
-        ).fetchone()
-
-        if not state:
-            await message.reply_text(
-                "Немає активного запису. Поверніться до групи та напишіть «Записати Ім’я».",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-            return
-
-        token = state[0]
-        pending = conn.execute(
-            """
-            SELECT group_id, group_title, requester_name, child_name
-            FROM mk_pending
-            WHERE token=? AND requester_id=? AND status='waiting_contact'
-            """,
-            (token, user.id),
-        ).fetchone()
-
-        if not pending:
-            conn.execute("DELETE FROM mk_user_state WHERE user_id=?", (user.id,))
-            conn.commit()
-            await message.reply_text(
-                "❌ Активний запис не знайдено.",
-                reply_markup=ReplyKeyboardRemove(),
-            )
-            return
-
-        group_id, group_title, requester_name, child_name = pending
-        created_at = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
-        phone_number = normalize_phone(contact.phone_number)
-
-        conn.execute(
-            """
-            INSERT INTO mk_registrations(
-                group_id,
-                group_title,
-                requester_id,
-                requester_name,
-                child_name,
-                phone_number,
-                created_at
-            )
-            VALUES(?,?,?,?,?,?,?)
-            """,
-            (
-                group_id,
-                group_title,
-                user.id,
-                requester_name,
-                child_name,
-                phone_number,
-                created_at,
-            ),
-        )
-        conn.execute("UPDATE mk_pending SET status='completed' WHERE token=?", (token,))
-        conn.execute(
-            """
-            INSERT INTO mk_contacts(user_id, phone_number, updated_at)
-            VALUES(?,?,?)
-            ON CONFLICT(user_id) DO UPDATE SET
-                phone_number=excluded.phone_number,
-                updated_at=excluded.updated_at
-            """,
-            (user.id, phone_number, created_at),
-        )
-        conn.execute("DELETE FROM mk_user_state WHERE user_id=?", (user.id,))
-        conn.commit()
-
-    # Повідомлення користувача з контактом не видаляємо.
-
-    await context.bot.send_message(
-        chat_id=user.id,
-        text=f"✅ Запис для «{child_name}» успішно створено.",
-        reply_markup=ReplyKeyboardRemove(),
-    )
-
-    _, confirmation_text = get_mk_settings(group_id)
-    confirmation_text = format_mk_html(
-        confirmation_text,
-        child_name,
-        requester_name,
-        group_title or "",
-    )
-    try:
-        await context.bot.send_message(
-            chat_id=group_id,
-            text=confirmation_text,
-            parse_mode="HTML",
-        )
-    except Exception:
-        logging.exception("Не вдалося надіслати підтвердження в групу %s", group_id)
 
 
 
-async def mk_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
 
-    with sqlite3.connect(DATABASE) as conn:
-        rows = conn.execute(
-            """
-            SELECT group_title, child_name, requester_name, phone_number, created_at
-            FROM mk_registrations
-            ORDER BY id DESC
-            LIMIT 20
-            """
-        ).fetchall()
 
-    if not rows:
-        await update.message.reply_text("Записів на майстер-класи ще немає.")
-        return
-
-    parts = ["📝 Останні записи на МК:\n"]
-    for group_title, child_name, requester_name, phone_number, created_at in rows:
-        parts.append(
-            f"\n🍣 {group_title}\n"
-            f"Ім’я: {child_name}\n"
-            f"Користувач: {requester_name}\n"
-            f"Телефон: {phone_number}\n"
-            f"Дата: {created_at}\n"
-        )
-
-    text = "".join(parts)
-    for start in range(0, len(text), 4000):
-        await update.message.reply_text(text[start:start + 4000])
 
 
 # ============================================================
@@ -1918,6 +1556,32 @@ def init_mk_schedule_schema():
                 idx_mk_registrations_google_source_key
             ON mk_registrations(google_source_key)
             WHERE google_source_key IS NOT NULL
+            """
+        )
+
+        # Індекси для швидкої статистики, сайту та записів МК.
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_events_group_time_action
+            ON events(group_id, event_time, action)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mk_registrations_group_date
+            ON mk_registrations(group_id, event_date)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mk_registrations_event_date
+            ON mk_registrations(event_date)
+            """
+        )
+        conn.execute(
+            """
+            CREATE INDEX IF NOT EXISTS idx_mk_schedule_group_date
+            ON mk_schedule(group_id, event_date)
             """
         )
 
@@ -3266,68 +2930,10 @@ async def receive_mk_contact(update: Update, context: ContextTypes.DEFAULT_TYPE)
     )
 
 
-async def mk_list(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-
-    with sqlite3.connect(DATABASE) as conn:
-        rows = conn.execute(
-            """
-            SELECT group_title, event_date, event_title, child_name,
-                   requester_name, phone_number, created_at
-            FROM mk_registrations
-            ORDER BY id DESC LIMIT 20
-            """
-        ).fetchall()
-
-    if not rows:
-        await update.message.reply_text("Записів на майстер-класи ще немає.")
-        return
-
-    parts = ["📝 Останні записи на МК:\n"]
-    for group_title, event_date, event_title, child_name, parent_name, phone, created_at in rows:
-        event_display = event_date or "Не вказано"
-        if event_date:
-            try:
-                event_display = datetime.strptime(event_date, "%Y-%m-%d").strftime("%d.%m.%Y")
-            except ValueError:
-                pass
-        parts.append(
-            f"\n🍣 {group_title}\n"
-            f"Майстер-клас: {event_title or 'Не вказано'}\n"
-            f"Дата МК: {event_display}\n"
-            f"Ім’я дитини: {child_name}\n"
-            f"Ім’я батьків: {parent_name}\n"
-            f"Телефон: {phone}\n"
-            f"Дата запису: {created_at}\n"
-        )
-
-    text = "".join(parts)
-    for start_index in range(0, len(text), 4000):
-        await update.message.reply_text(text[start_index:start_index + 4000])
 
 
-async def mk_excel(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    if update.effective_chat.type != "private":
-        return
-
-    filepath = build_mk_registrations_excel()
-    with filepath.open("rb") as file:
-        await update.message.reply_document(
-            document=file,
-            filename=filepath.name,
-            caption="📝 Постійна таблиця записів на майстер-класи",
-        )
 
 
-async def cancel_mk_setting(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if not is_admin(update.effective_user.id):
-        return
-    mk_config_state.pop(update.effective_user.id, None)
-    mk_schedule_state.pop(update.effective_user.id, None)
-    await update.message.reply_text("❌ Налаштування МК скасовано.")
 
 
 
@@ -4144,6 +3750,11 @@ async def post_init(application):
         name="google-mk-sync-retry",
     )
 
+    application.create_task(
+        mk_registration_cleanup_scheduler(application),
+        name="mk-registration-cleanup",
+    )
+
 
 
 # ============================================================
@@ -4376,6 +3987,13 @@ def sync_google_sheet_registrations_to_local(force=False):
                 if not restaurant or not event_date:
                     continue
 
+                cutoff_date = (
+                    datetime.now(TIMEZONE).date()
+                    - timedelta(days=MK_REGISTRATION_RETENTION_DAYS)
+                ).isoformat()
+                if event_date < cutoff_date:
+                    continue
+
                 group_info = restaurant_map.get(_google_key(restaurant))
                 if not group_info:
                     # Запис іншого ресторану, якого немає серед Telegram-груп бота.
@@ -4560,6 +4178,97 @@ def sync_google_sheet_registrations_to_local(force=False):
 
 
 
+
+# ============================================================
+# АВТООЧИЩЕННЯ СТАРИХ ЗАПИСІВ МК
+# ============================================================
+
+MK_REGISTRATION_RETENTION_DAYS = int(
+    os.getenv("MK_REGISTRATION_RETENTION_DAYS", "14")
+)
+
+
+def cleanup_old_mk_registrations():
+    """
+    Видаляє локальні записи МК, дата яких була більше ніж
+    MK_REGISTRATION_RETENTION_DAYS днів тому.
+
+    Приклад:
+    якщо сьогодні 25.08.2026, будуть видалені записи
+    з event_date < 11.08.2026.
+    """
+    cutoff_date = (
+        datetime.now(TIMEZONE).date()
+        - timedelta(days=MK_REGISTRATION_RETENTION_DAYS)
+    ).isoformat()
+
+    with sqlite3.connect(DATABASE, timeout=10) as conn:
+        conn.execute("PRAGMA busy_timeout=10000")
+
+        old_ids = [
+            row[0]
+            for row in conn.execute(
+                """
+                SELECT id
+                FROM mk_registrations
+                WHERE event_date IS NOT NULL
+                  AND TRIM(event_date) <> ''
+                  AND event_date < ?
+                """,
+                (cutoff_date,),
+            ).fetchall()
+        ]
+
+        if not old_ids:
+            return 0
+
+        placeholders = ",".join("?" for _ in old_ids)
+
+        # Спочатку прибираємо службові записи синхронізації.
+        conn.execute(
+            f"""
+            DELETE FROM mk_google_sync
+            WHERE registration_id IN ({placeholders})
+            """,
+            old_ids,
+        )
+
+        cursor = conn.execute(
+            f"""
+            DELETE FROM mk_registrations
+            WHERE id IN ({placeholders})
+            """,
+            old_ids,
+        )
+
+        conn.commit()
+        deleted = cursor.rowcount if cursor.rowcount is not None else len(old_ids)
+
+    if deleted:
+        logging.info(
+            "МК cleanup: видалено %s записів старше %s днів (до %s)",
+            deleted,
+            MK_REGISTRATION_RETENTION_DAYS,
+            cutoff_date,
+        )
+
+    return deleted
+
+
+async def mk_registration_cleanup_scheduler(application):
+    """Раз на добу очищає записи МК, яким більше 14 днів."""
+    while True:
+        try:
+            cleanup_old_mk_registrations()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logging.exception("Помилка автоочищення старих записів МК")
+
+        # Раз на 24 години достатньо; точний час не критичний.
+        await asyncio.sleep(24 * 60 * 60)
+
+
 # ============================================================
 # TELEGRAM MINI APP / WEB API
 # ============================================================
@@ -4738,6 +4447,8 @@ def web_dates(request: Request):
 def web_restaurants(request: Request, date: str | None = None):
     current = _web_current_user(request)
 
+    cleanup_old_mk_registrations()
+
     # Додаємо в локальне представлення нові рядки з Google-таблиці.
     sync_google_sheet_registrations_to_local()
 
@@ -4766,6 +4477,8 @@ def web_registrations(
     q: str = "",
 ):
     current = _web_current_user(request)
+
+    cleanup_old_mk_registrations()
 
     # Підтягуємо записи, які існують у Google-таблиці, але могли
     # бути створені не через Telegram-бота.
@@ -4887,6 +4600,7 @@ def main():
     init_db()
     init_access_schema()
     init_mk_schedule_schema()
+    cleanup_old_mk_registrations()
     check_db()
     start_web_server()
 
