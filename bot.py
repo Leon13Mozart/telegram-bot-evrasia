@@ -56,7 +56,7 @@ from telegram.ext import (
 # НАЛАШТУВАННЯ
 # ============================================================
 
-TOKEN = os.getenv("8835839482:AAFQ0yWwNdZ7dHUzJKPernaOVo_HMUNL24g")
+TOKEN = "8835839482:AAFQ0yWwNdZ7dHUzJKPernaOVo_HMUNL24g"
 
 ADMINS = [
     929200380,
@@ -67,7 +67,12 @@ DEVELOPER_ID = 929200380
 DEFAULT_MANAGER_ID = 395523040
 
 DATABASE = os.getenv("DATABASE_PATH", "telegram_stats.db")
-WEB_APP_URL = os.getenv("WEB_APP_URL", "https://evrasia-masterclass.web.app").rstrip("/")
+
+WEB_APP_URL = os.getenv(
+    "WEB_APP_URL",
+    "https://evrasia-masterclass.web.app"
+).rstrip("/")
+
 WEB_ALLOWED_ORIGINS = [
     origin.strip().rstrip("/")
     for origin in os.getenv(
@@ -76,22 +81,16 @@ WEB_ALLOWED_ORIGINS = [
     ).split(",")
     if origin.strip()
 ]
+
 WEB_DEBUG_USER_ID = os.getenv("WEB_DEBUG_USER_ID", "").strip()
+
 TIMEZONE = ZoneInfo("Europe/Kyiv")
+
 AUTO_REPORT_CHAT_IDS = ADMINS
+
 REPORT_HOUR = 23
 REPORT_MINUTE = 59
 
-# Google Apps Script endpoint для запису реєстрацій ДМК.
-GOOGLE_MK_WEB_APP_URL = os.getenv(
-    "GOOGLE_MK_WEB_APP_URL",
-    "https://script.google.com/macros/s/AKfycbzHFmihuVlvb9fGDplo0Yxdw6-00y-UztV-VLMO/exec",
-)
-
-GOOGLE_MK_SHEET_URL = os.getenv(
-    "GOOGLE_MK_SHEET_URL",
-    "https://docs.google.com/spreadsheets/d/1wy1a3aZ6w5B56R9vbWxuIq6qFcFzOiiOpMczF5frfJM/edit?usp=drivesdk",
-)
 
 # Відповідність назв Telegram-груп назвам ресторанів у Google-таблиці.
 # Пошук виконується за фрагментом назви групи, без урахування регістру.
