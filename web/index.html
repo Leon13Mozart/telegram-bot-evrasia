@@ -1,0 +1,75 @@
+<!DOCTYPE html>
+<html lang="uk">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <title>Євразія — Майстер-класи</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+</head>
+<body>
+  <div class="page">
+    <main class="app-card">
+      <header class="header">
+        <div class="logo">ЄВРАЗІЯ</div>
+        <div class="user-role" id="userRole"></div>
+      </header>
+
+      <section class="intro">
+        <h1>Записи на майстер-класи</h1>
+        <p>Перегляд записів на дитячі майстер-класи. Усі майстер-класи проходять о 12:00.</p>
+      </section>
+
+      <section class="date-section">
+        <div class="section-label">Оберіть дату</div>
+        <div class="dates" id="dates"></div>
+      </section>
+
+      <section class="restaurant-filter-section" id="restaurantSection">
+        <div class="section-label">Ресторан</div>
+        <div class="restaurant-list" id="restaurantList"></div>
+        <div class="assigned-restaurant" id="assignedRestaurant">
+          <span>Ваш ресторан</span>
+          <strong id="assignedRestaurantName"></strong>
+        </div>
+      </section>
+
+      <section class="search-section">
+        <div class="search-box">
+          <span class="search-icon">⌕</span>
+          <input id="searchInput" type="text" placeholder="Пошук за ім'ям, дитиною або телефоном">
+        </div>
+      </section>
+
+      <section class="table-info">
+        <div><span class="selected-date-label">Майстер-класи:</span> <strong id="selectedDate">—</strong></div>
+        <div class="records-count" id="recordsCount">0 записів</div>
+      </section>
+
+      <section class="table-container">
+        <table>
+          <thead>
+            <tr>
+              <th>Ресторан</th>
+              <th>Ім'я гостя</th>
+              <th>Ім'я дитини</th>
+              <th>Дітей</th>
+              <th>Телефон</th>
+              <th>Статус</th>
+            </tr>
+          </thead>
+          <tbody id="masterClassTable"></tbody>
+        </table>
+      </section>
+
+      <div class="empty-message" id="emptyMessage">На цю дату записів поки немає.</div>
+      <div class="error-message" id="errorMessage"></div>
+
+      <footer class="footer">Майстер-класи щонеділі <strong>12:00</strong></footer>
+    </main>
+  </div>
+
+  <script src="/config.js"></script>
+<script src="/static/script.js"></script>
+</body>
+</html>
