@@ -5,8 +5,7 @@ import hashlib
 import hmac
 import json
 import time
-from urllib.parse 
-import parse_qsl
+from urllib.parse import parse_qsl
 import logging
 import os
 import re
