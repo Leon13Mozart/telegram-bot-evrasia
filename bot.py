@@ -68,7 +68,7 @@ from telegram.ext import (
 # НАЛАШТУВАННЯ
 # ============================================================
 
-TOKEN = "8835839482:AAHCVsFgBSflQZk8UmRYSkA5vmUpjD_qjAM"
+TOKEN = "8835839482:AAGHHSq9G2xhwLMIu8TSGfY3tzHABVK5WB4"
 
 ADMINS = [
     929200380,
