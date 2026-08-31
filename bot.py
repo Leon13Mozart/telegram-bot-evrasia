@@ -1,6 +1,5 @@
 import asyncio
 import calendar
-import csv
 import html
 import hashlib
 import hmac
@@ -14,7 +13,6 @@ import secrets
 import sqlite3
 import threading
 import httpx
-from io import StringIO
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -94,35 +92,9 @@ REPORT_HOUR = 23
 REPORT_MINUTE = 59
 
 
-# Google Apps Script, куди бот записує нові реєстрації.
-GOOGLE_MK_WEB_APP_URL = os.getenv(
-    "GOOGLE_MK_WEB_APP_URL",
-    "https://script.google.com/macros/s/AKfycbzHFmihuVlvb9fGDplo0Yxdw6-00y-UztV-VLMO/exec",
-).strip()
-
-# Існуюча Google-таблиця реєстрацій. Нову таблицю бот НЕ створює.
-GOOGLE_MK_SHEET_ID = os.getenv(
-    "GOOGLE_MK_SHEET_ID",
-    "1wy1a3aZ6w5B56R9vbWxuIq6qFcFzOiiOpMczF5frfJM",
-).strip()
-
-GOOGLE_MK_REGISTRATIONS_SHEET = os.getenv(
-    "GOOGLE_MK_REGISTRATIONS_SHEET",
-    "Всі реєстрації",
-).strip()
-
-# Не звертаємося до Google при кожному кліку на сайті.
-GOOGLE_MK_READ_CACHE_SECONDS = int(
-    os.getenv("GOOGLE_MK_READ_CACHE_SECONDS", "30")
-)
-
-_google_mk_read_lock = threading.RLock()
-_google_mk_last_read_at = 0.0
-
-
-# Відповідність назв Telegram-груп назвам ресторанів у Google-таблиці.
-# Пошук виконується за фрагментом назви групи, без урахування регістру.
-GOOGLE_MK_RESTAURANT_ALIASES = {
+# Відповідність Telegram-груп назвам ресторанів у Google Form.
+# Значення мають збігатися з варіантами ресторану у формі.
+MK_RESTAURANT_ALIASES = {
     "retroville": "пр-т Правди, 47",
     "маяковського 5в": "пр-т Червоної калини, 5в",
     "маяковського 44а": "пр-т Червоної калини, 44а",
@@ -182,6 +154,14 @@ def init_db():
         conn.execute('\n        CREATE TABLE IF NOT EXISTS groups(\n            group_id INTEGER PRIMARY KEY,\n            title TEXT\n        )\n        ')
         conn.execute('\n        CREATE TABLE IF NOT EXISTS events(\n            id INTEGER PRIMARY KEY AUTOINCREMENT,\n            group_id INTEGER,\n            user_id INTEGER,\n            username TEXT,\n            first_name TEXT,\n            action TEXT,\n            event_time TEXT\n        )\n        ')
         conn.execute('\n        CREATE TABLE IF NOT EXISTS last_broadcast(\n            id INTEGER PRIMARY KEY AUTOINCREMENT,\n            group_id INTEGER NOT NULL,\n            message_id INTEGER NOT NULL\n        )\n        ')
+        conn.execute(
+            """
+            CREATE TABLE IF NOT EXISTS last_pinned_broadcast(
+                group_id INTEGER PRIMARY KEY,
+                message_id INTEGER NOT NULL
+            )
+            """
+        )
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS mk_settings(
@@ -597,7 +577,8 @@ async def groups(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(text)
 
 async def stats(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    if update.effective_user.id not in ADMINS:
+    # Розробник і всі Керуючі з access_roles мають доступ до статистики.
+    if not is_admin(update.effective_user.id):
         return
     groups = get_groups()
     if not groups:
@@ -1279,51 +1260,281 @@ async def mk_registration_trigger(update: Update, context: ContextTypes.DEFAULT_
 async def broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     if not is_admin(update.effective_user.id):
         return
-    broadcast_wait[update.effective_user.id] = True
-    await update.message.reply_text('📨 Надішліть повідомлення для розсилки.\n\nПідтримуються:\n• текст\n• Premium Emoji\n• фото\n• відео\n• GIF\n• документ\n\nПісля цього бот покаже кнопки підтвердження.')
+
+    user_id = update.effective_user.id
+
+    # Чекаємо саме повідомлення для розсилки.
+    broadcast_wait[user_id] = True
+    broadcast_message.pop(user_id, None)
+
+    await update.message.reply_text(
+        "📨 Надішліть повідомлення для розсилки.\n\n"
+        "Підтримуються:\n"
+        "• текст\n"
+        "• Premium Emoji\n"
+        "• фото\n"
+        "• відео\n"
+        "• GIF\n"
+        "• документ\n\n"
+        "Після цього можна буде обрати, чи закріплювати повідомлення."
+    )
 
 
 async def receive_broadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user_id = update.effective_user.id
+
     if user_id not in broadcast_wait:
         return
-    del broadcast_wait[user_id]
-    message = update.message
-    broadcast_message[user_id] = (message.chat.id, message.message_id)
-    keyboard = InlineKeyboardMarkup([[InlineKeyboardButton('✅ Відправити', callback_data='broadcast_send'), InlineKeyboardButton('❌ Скасувати', callback_data='broadcast_cancel')]])
-    await update.message.reply_text('👆 Повідомлення отримано.\n\nПідтвердити розсилку?', reply_markup=keyboard)
+
+    broadcast_wait.pop(user_id, None)
+
+    message = update.effective_message
+    if not message:
+        return
+
+    # Зберігаємо оригінал, щоб copy_message переніс форматування
+    # і Telegram Premium / Custom Emoji без втрати.
+    broadcast_message[user_id] = {
+        "from_chat_id": message.chat.id,
+        "message_id": message.message_id,
+        "pin": None,
+    }
+
+    keyboard = InlineKeyboardMarkup(
+        [
+            [
+                InlineKeyboardButton(
+                    "📌 Закріпити",
+                    callback_data="broadcast_pin",
+                ),
+                InlineKeyboardButton(
+                    "Без закріплення",
+                    callback_data="broadcast_no_pin",
+                ),
+            ],
+            [
+                InlineKeyboardButton(
+                    "❌ Скасувати",
+                    callback_data="broadcast_cancel",
+                )
+            ],
+        ]
+    )
+
+    await message.reply_text(
+        "👆 Повідомлення отримано.\n\n"
+        "Закріпити цю розсилку в групах?",
+        reply_markup=keyboard,
+    )
 
 
 async def broadcast_buttons(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
-    await query.answer()
     user_id = query.from_user.id
-    if query.data == 'broadcast_cancel':
-        if user_id in broadcast_message:
-            del broadcast_message[user_id]
-        await query.edit_message_text('❌ Розсилку скасовано.')
+
+    if not is_admin(user_id):
+        await query.answer("Немає доступу.", show_alert=True)
         return
-    if query.data != 'broadcast_send':
+
+    data = query.data or ""
+
+    # --------------------------------------------------------
+    # Скасування
+    # --------------------------------------------------------
+    if data == "broadcast_cancel":
+        broadcast_message.pop(user_id, None)
+        broadcast_wait.pop(user_id, None)
+
+        await query.answer()
+        try:
+            await query.edit_message_text("❌ Розсилку скасовано.")
+        except Exception:
+            pass
         return
-    if user_id not in broadcast_message:
-        await query.edit_message_text('❌ Повідомлення не знайдено.')
+
+    state = broadcast_message.get(user_id)
+
+    if not state:
+        await query.answer(
+            "❌ Повідомлення для розсилки вже не знайдено.",
+            show_alert=True,
+        )
         return
-    from_chat_id, message_id = broadcast_message[user_id]
+
+    # --------------------------------------------------------
+    # Вибір: закріплювати чи ні
+    # --------------------------------------------------------
+    if data in {"broadcast_pin", "broadcast_no_pin"}:
+        state["pin"] = data == "broadcast_pin"
+
+        pin_text = "📌 Так" if state["pin"] else "Ні"
+
+        keyboard = InlineKeyboardMarkup(
+            [
+                [
+                    InlineKeyboardButton(
+                        "✅ Відправити",
+                        callback_data="broadcast_send",
+                    ),
+                    InlineKeyboardButton(
+                        "❌ Скасувати",
+                        callback_data="broadcast_cancel",
+                    ),
+                ]
+            ]
+        )
+
+        await query.answer()
+
+        try:
+            await query.edit_message_text(
+                "📢 Параметри розсилки\n\n"
+                f"Закріпити повідомлення: {pin_text}\n\n"
+                "Відправити розсилку?",
+                reply_markup=keyboard,
+            )
+        except Exception:
+            pass
+        return
+
+    if data != "broadcast_send":
+        await query.answer()
+        return
+
+    # Захист від старої/некоректної кнопки.
+    if state.get("pin") is None:
+        await query.answer(
+            "Спочатку оберіть: закріпити повідомлення чи ні.",
+            show_alert=True,
+        )
+        return
+
+    await query.answer("Розсилка запускається…")
+
+    from_chat_id = state["from_chat_id"]
+    message_id = state["message_id"]
+    pin_message = bool(state["pin"])
+
     groups = get_groups()
+
     sent = 0
     failed = 0
+    pinned = 0
+    pin_failed = 0
+    unpinned = 0
+
     for group_id, title in groups:
         try:
-            msg = await context.bot.copy_message(chat_id=group_id, from_chat_id=from_chat_id, message_id=message_id)
+            # copy_message зберігає Telegram entities,
+            # включно з Premium / Custom Emoji.
+            msg = await context.bot.copy_message(
+                chat_id=group_id,
+                from_chat_id=from_chat_id,
+                message_id=message_id,
+            )
+
             with sqlite3.connect(DATABASE) as conn:
-                conn.execute('\n                    INSERT INTO last_broadcast(\n                        group_id,\n                        message_id\n                    )\n                    VALUES (?, ?)\n                    ', (group_id, msg.message_id))
+                conn.execute(
+                    """
+                    INSERT INTO last_broadcast(group_id, message_id)
+                    VALUES (?, ?)
+                    """,
+                    (group_id, msg.message_id),
+                )
                 conn.commit()
+
             sent += 1
-        except Exception as e:
-            print(f'{title}: {e}')
+
+            if not pin_message:
+                continue
+
+            try:
+                # Беремо ТІЛЬКИ попередню розсилку,
+                # яку саме цей бот раніше закріпив.
+                with sqlite3.connect(DATABASE) as conn:
+                    old_pin = conn.execute(
+                        """
+                        SELECT message_id
+                        FROM last_pinned_broadcast
+                        WHERE group_id=?
+                        """,
+                        (group_id,),
+                    ).fetchone()
+
+                if old_pin:
+                    try:
+                        await context.bot.unpin_chat_message(
+                            chat_id=group_id,
+                            message_id=old_pin[0],
+                        )
+                        unpinned += 1
+                    except Exception:
+                        # Старе повідомлення могло бути вже видалено/
+                        # відкріплено вручну — це не блокує нове закріплення.
+                        logging.warning(
+                            "Не вдалося відкріпити попередню розсилку у %s",
+                            title,
+                        )
+
+                await context.bot.pin_chat_message(
+                    chat_id=group_id,
+                    message_id=msg.message_id,
+                    disable_notification=True,
+                )
+
+                with sqlite3.connect(DATABASE) as conn:
+                    conn.execute(
+                        """
+                        INSERT INTO last_pinned_broadcast(group_id, message_id)
+                        VALUES (?, ?)
+                        ON CONFLICT(group_id) DO UPDATE SET
+                            message_id=excluded.message_id
+                        """,
+                        (group_id, msg.message_id),
+                    )
+                    conn.commit()
+
+                pinned += 1
+
+            except Exception:
+                logging.exception(
+                    "Не вдалося закріпити розсилку у групі %s",
+                    title,
+                )
+                pin_failed += 1
+
+        except Exception:
+            logging.exception(
+                "Помилка розсилки у групу %s",
+                title,
+            )
             failed += 1
-    del broadcast_message[user_id]
-    await query.edit_message_text(f'\n✅ Розсилку завершено\n\n📨 Надіслано: {sent}\n❌ Помилок: {failed}\n📂 Всього груп: {len(groups)}\n')
+
+    broadcast_message.pop(user_id, None)
+    broadcast_wait.pop(user_id, None)
+
+    result = (
+        "✅ Розсилку завершено\n\n"
+        f"📨 Надіслано: {sent}\n"
+        f"❌ Помилок відправки: {failed}\n"
+        f"📂 Всього груп: {len(groups)}"
+    )
+
+    if pin_message:
+        result += (
+            "\n\n"
+            f"📌 Закріплено: {pinned}\n"
+            f"📍 Відкріплено попередніх: {unpinned}\n"
+            f"⚠️ Помилок закріплення: {pin_failed}"
+        )
+
+    try:
+        await query.edit_message_text(result)
+    except Exception:
+        await context.bot.send_message(
+            chat_id=query.message.chat_id,
+            text=result,
+        )
 
 
 # ============================================================
@@ -1366,6 +1577,9 @@ async def deletebroadcast(update: Update, context: ContextTypes.DEFAULT_TYPE):
             failed += 1
     with sqlite3.connect(DATABASE) as conn:
         conn.execute('DELETE FROM last_broadcast')
+        # Після видалення останньої розсилки старий message_id
+        # більше не повинен вважатися активним pinned broadcast.
+        conn.execute('DELETE FROM last_pinned_broadcast')
         conn.commit()
     await update.message.reply_text(f'\n🗑 Розсилку видалено\n\n✅ Видалено: {deleted}\n❌ Помилок: {failed}\n')
 
@@ -2342,12 +2556,12 @@ async def mk_schedule_group_button(update: Update, context: ContextTypes.DEFAULT
 
 
 
-def resolve_google_mk_restaurant(group_title):
-    """Повертає назву ресторану так, як вона має виглядати в Google-таблиці."""
+def resolve_mk_restaurant_name(group_title):
+    """Повертає назву ресторану так, як вона задана у Google Form."""
     title = (group_title or "").strip()
     normalized = title.casefold().replace("’", "'").replace("ʼ", "'")
 
-    for fragment, restaurant in GOOGLE_MK_RESTAURANT_ALIASES.items():
+    for fragment, restaurant in MK_RESTAURANT_ALIASES.items():
         if fragment.casefold() in normalized:
             return restaurant
 
@@ -2369,149 +2583,14 @@ def infer_children_count(child_name):
     return max(1, len(parts))
 
 
-def validate_google_mk_payload(payload):
-    required = ("name", "phone", "date", "rest", "children")
-    missing = [key for key in required if not str(payload.get(key, "")).strip()]
-    if missing:
-        raise ValueError(
-            "Не заповнені обов'язкові поля Google MK: " + ", ".join(missing)
-        )
 
 
-def build_google_mk_payload(registration_row):
-    (
-        registration_id,
-        group_title,
-        requester_name,
-        child_name,
-        phone_number,
-        event_date,
-    ) = registration_row
-
-    payload = {
-        "name": (requester_name or "").strip(),
-        "phone": re.sub(r"\D", "", phone_number or ""),
-        "date": (event_date or "").strip(),
-        "rest": resolve_google_mk_restaurant(group_title),
-        "children": str(infer_children_count(child_name)),
-        "childrenNames": normalized_children_names(child_name),
-    }
-    validate_google_mk_payload(payload)
-    return registration_id, payload
 
 
-def mark_google_mk_sync(registration_id, *, synced, error=None):
-    with sqlite3.connect(DATABASE) as conn:
-        conn.execute(
-            """
-            INSERT INTO mk_google_sync(
-                registration_id, synced, attempts, last_error, synced_at
-            )
-            VALUES(?,?,?,?,?)
-            ON CONFLICT(registration_id) DO UPDATE SET
-                synced=excluded.synced,
-                attempts=mk_google_sync.attempts + 1,
-                last_error=excluded.last_error,
-                synced_at=excluded.synced_at
-            """,
-            (
-                registration_id,
-                1 if synced else 0,
-                1,
-                None if synced else (error or "Невідома помилка"),
-                datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S") if synced else None,
-            ),
-        )
-        conn.commit()
 
 
-async def sync_mk_registration_to_google(registration_id):
-    """Надсилає один локально збережений запис у Google Apps Script."""
-    if not GOOGLE_MK_WEB_APP_URL:
-        mark_google_mk_sync(
-            registration_id,
-            synced=False,
-            error="GOOGLE_MK_WEB_APP_URL не заданий",
-        )
-        return False
-
-    with sqlite3.connect(DATABASE) as conn:
-        row = conn.execute(
-            """
-            SELECT id, group_title, requester_name, child_name,
-                   phone_number, event_date
-            FROM mk_registrations
-            WHERE id=?
-            """,
-            (registration_id,),
-        ).fetchone()
-
-    if not row:
-        return False
-
-    try:
-        _, payload = build_google_mk_payload(row)
-
-        timeout = httpx.Timeout(8.0, connect=4.0)
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as client:
-            response = await client.get(GOOGLE_MK_WEB_APP_URL, params=payload)
-            response.raise_for_status()
-
-        try:
-            result = response.json()
-        except ValueError as exc:
-            raise RuntimeError("Google Apps Script повернув не JSON") from exc
-
-        if result.get("response") != "ok" or int(result.get("code", 0)) != 200:
-            raise RuntimeError(f"Некоректна відповідь Google Apps Script: {result}")
-
-        mark_google_mk_sync(registration_id, synced=True)
-        logging.info(
-            "Google MK: запис %s синхронізовано (%s, %s)",
-            registration_id,
-            payload["rest"],
-            payload["date"],
-        )
-        return True
-
-    except Exception as exc:
-        mark_google_mk_sync(registration_id, synced=False, error=str(exc))
-        logging.exception(
-            "Google MK: не вдалося синхронізувати запис %s",
-            registration_id,
-        )
-        return False
 
 
-async def retry_pending_google_mk_sync(application):
-    """Періодично повторює синхронізацію записів, які не вдалося відправити."""
-    while True:
-        await asyncio.sleep(300)
-
-        try:
-            with sqlite3.connect(DATABASE) as conn:
-                rows = conn.execute(
-                    """
-                    SELECT r.id
-                    FROM mk_registrations r
-                    LEFT JOIN mk_google_sync s ON s.registration_id=r.id
-                    WHERE r.event_date IS NOT NULL
-                      AND TRIM(COALESCE(r.event_date, '')) <> ''
-                      AND (s.registration_id IS NULL OR s.synced=0)
-                      AND COALESCE(s.attempts, 0) < 20
-                    ORDER BY r.id
-                    LIMIT 50
-                    """
-                ).fetchall()
-
-            for (registration_id,) in rows:
-                await sync_mk_registration_to_google(registration_id)
-                await asyncio.sleep(0.25)
-
-        except asyncio.CancelledError:
-            raise
-        except Exception:
-            logging.exception("Помилка фонового повтору Google MK sync")
 
 
 async def _complete_mk_registration_with_schedule(
@@ -2550,20 +2629,6 @@ async def _complete_mk_registration_with_schedule(
     except Exception:
         logging.exception(
             "Не вдалося запустити фонове оновлення Excel для запису %s",
-            registration_id,
-        )
-
-    # Google Sheets також синхронізуємо у фоні.
-    # Запис уже надійно збережений у SQLite, тому користувач не чекає
-    # відповіді Google Apps Script і одразу отримує підтвердження.
-    try:
-        context.application.create_task(
-            sync_mk_registration_to_google(registration_id),
-            name=f"google-mk-sync-{registration_id}",
-        )
-    except Exception:
-        logging.exception(
-            "Не вдалося запустити Google sync для запису %s",
             registration_id,
         )
 
@@ -3746,11 +3811,6 @@ async def post_init(application):
 
     application.create_task(monthly_report_scheduler(application))
     application.create_task(
-        retry_pending_google_mk_sync(application),
-        name="google-mk-sync-retry",
-    )
-
-    application.create_task(
         mk_registration_cleanup_scheduler(application),
         name="mk-registration-cleanup",
     )
@@ -3762,419 +3822,24 @@ async def post_init(application):
 # ============================================================
 
 
-def _google_text(value):
-    return re.sub(r"\s+", " ", str(value or "")).strip()
 
 
-def _google_key(value):
-    value = _google_text(value).casefold()
-    value = value.replace("’", "'").replace("ʼ", "'").replace("`", "'")
-    value = re.sub(r"[^0-9a-zа-яіїєґ' ]+", " ", value, flags=re.IGNORECASE)
-    return re.sub(r"\s+", " ", value).strip()
 
 
-def _google_phone_key(value):
-    digits = re.sub(r"\D", "", str(value or ""))
-    if digits.startswith("0") and len(digits) == 10:
-        digits = "38" + digits
-    return digits
 
 
-def _google_date_iso(value):
-    value = _google_text(value)
-    if not value:
-        return ""
-
-    # ISO datetime / ISO date.
-    iso_match = re.match(r"^(\d{4}-\d{2}-\d{2})", value)
-    if iso_match:
-        return iso_match.group(1)
-
-    for fmt in (
-        "%d.%m.%Y",
-        "%d/%m/%Y",
-        "%d-%m-%Y",
-        "%d.%m.%y",
-        "%m/%d/%Y",
-    ):
-        try:
-            return datetime.strptime(value, fmt).strftime("%Y-%m-%d")
-        except ValueError:
-            pass
-
-    return ""
 
 
-def _google_created_at(value, event_date):
-    value = _google_text(value)
-    if value:
-        for fmt in (
-            "%d.%m.%Y %H:%M:%S",
-            "%d.%m.%Y %H:%M",
-            "%Y-%m-%d %H:%M:%S",
-            "%Y-%m-%dT%H:%M:%S",
-        ):
-            try:
-                return datetime.strptime(value[:19], fmt).strftime("%Y-%m-%d %H:%M:%S")
-            except ValueError:
-                pass
-
-    return f"{event_date} 00:00:00" if event_date else datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
 
 
-def _google_registration_columns(headers):
-    """
-    Повертає індекси колонок головного листа.
-    Підтримує українські/російські/англійські заголовки та fallback по позиціях.
-    """
-    normalized = [_google_key(h).replace(" ", "") for h in headers]
-
-    aliases = {
-        "created": (
-            "датачасреєстрації", "датареєстрації", "часреєстрації",
-            "датавремярегистрации", "timestamp", "createdat",
-        ),
-        "restaurant": ("ресторан", "restaurant", "заклад"),
-        "event_date": (
-            "датамк", "датамайстеркласу", "датамайстеркласса",
-            "датаmasterclass", "date",
-        ),
-        "parent": (
-            "імябатьків", "імябатька", "батьки", "имяродителей",
-            "родители", "name", "guestname",
-        ),
-        "phone": ("телефон", "номер телефону", "номертелефону", "phone"),
-        "children_count": (
-            "кількістьдітей", "кводітей", "количестводетей", "children",
-        ),
-        "children_names": (
-            "іменадітей", "імядитини", "имена детей", "именадетей",
-            "childrennames", "childname",
-        ),
-    }
-
-    result = {}
-    for key, variants in aliases.items():
-        wanted = {_google_key(v).replace(" ", "") for v in variants}
-        for index, header in enumerate(normalized):
-            if header in wanted:
-                result[key] = index
-                break
-
-    # Структура наданої таблиці:
-    # дата/час, ресторан, дата МК, батьки, телефон, кількість, імена.
-    fallback = {
-        "created": 0,
-        "restaurant": 1,
-        "event_date": 2,
-        "parent": 3,
-        "phone": 4,
-        "children_count": 5,
-        "children_names": 6,
-    }
-    for key, index in fallback.items():
-        if key not in result and index < len(headers):
-            result[key] = index
-
-    return result
 
 
-def _google_cell(row, columns, key):
-    index = columns.get(key)
-    if index is None or index >= len(row):
-        return ""
-    return _google_text(row[index])
 
 
-def _google_sheet_csv_rows():
-    """Завантажує існуючий лист 'Всі реєстрації' як CSV."""
-    if not GOOGLE_MK_SHEET_ID:
-        return []
-
-    url = (
-        f"https://docs.google.com/spreadsheets/d/"
-        f"{GOOGLE_MK_SHEET_ID}/gviz/tq"
-    )
-
-    timeout = httpx.Timeout(8.0, connect=4.0)
-    with httpx.Client(timeout=timeout, follow_redirects=True) as client:
-        response = client.get(
-            url,
-            params={
-                "tqx": "out:csv",
-                "sheet": GOOGLE_MK_REGISTRATIONS_SHEET,
-            },
-        )
-        response.raise_for_status()
-
-    content_type = (response.headers.get("content-type") or "").lower()
-    body_start = response.text[:300].casefold()
-
-    # Якщо Google повернув сторінку входу замість CSV.
-    if "text/html" in content_type and (
-        "accounts.google.com" in body_start
-        or "<html" in body_start
-    ):
-        raise RuntimeError(
-            "Google-таблиця недоступна для читання без авторизації. "
-            "Надайте доступ 'Усі, хто має посилання — Перегляд' "
-            "або окремий endpoint читання."
-        )
-
-    return list(csv.reader(StringIO(response.text)))
 
 
-def _google_restaurant_group_map():
-    result = {}
-    for group_id, title in get_groups():
-        restaurant = resolve_google_mk_restaurant(title)
-        result[_google_key(restaurant)] = (group_id, title)
-    return result
 
 
-def sync_google_sheet_registrations_to_local(force=False):
-    """
-    Підтягує записи з уже існуючої Google-таблиці в локальну SQLite.
-    Це дозволяє існуючому /api/registrations показувати і записи з бота,
-    і записи, які були створені безпосередньо через таблицю/форму.
-
-    При помилці Google сайт продовжує працювати з локальними записами.
-    """
-    global _google_mk_last_read_at
-
-    now_ts = time.time()
-    if (
-        not force
-        and _google_mk_last_read_at
-        and now_ts - _google_mk_last_read_at < GOOGLE_MK_READ_CACHE_SECONDS
-    ):
-        return 0
-
-    with _google_mk_read_lock:
-        now_ts = time.time()
-        if (
-            not force
-            and _google_mk_last_read_at
-            and now_ts - _google_mk_last_read_at < GOOGLE_MK_READ_CACHE_SECONDS
-        ):
-            return 0
-
-        try:
-            csv_rows = _google_sheet_csv_rows()
-        except Exception:
-            logging.exception("Google MK: не вдалося прочитати таблицю реєстрацій")
-            _google_mk_last_read_at = now_ts
-            return 0
-
-        if len(csv_rows) < 2:
-            _google_mk_last_read_at = now_ts
-            return 0
-
-        headers = csv_rows[0]
-        columns = _google_registration_columns(headers)
-        restaurant_map = _google_restaurant_group_map()
-        imported = 0
-
-        with sqlite3.connect(DATABASE, timeout=10) as conn:
-            conn.execute("PRAGMA busy_timeout=10000")
-
-            for csv_row in csv_rows[1:]:
-                restaurant = _google_cell(csv_row, columns, "restaurant")
-                event_date = _google_date_iso(
-                    _google_cell(csv_row, columns, "event_date")
-                )
-
-                if not restaurant or not event_date:
-                    continue
-
-                cutoff_date = (
-                    datetime.now(TIMEZONE).date()
-                    - timedelta(days=MK_REGISTRATION_RETENTION_DAYS)
-                ).isoformat()
-                if event_date < cutoff_date:
-                    continue
-
-                group_info = restaurant_map.get(_google_key(restaurant))
-                if not group_info:
-                    # Запис іншого ресторану, якого немає серед Telegram-груп бота.
-                    continue
-
-                group_id, group_title = group_info
-                parent_name = _google_cell(csv_row, columns, "parent")
-                phone_raw = _google_cell(csv_row, columns, "phone")
-                phone_key = _google_phone_key(phone_raw)
-                phone_number = normalize_phone(phone_raw) if phone_key else ""
-                child_name = _google_cell(csv_row, columns, "children_names")
-
-                # На сайті показуємо саме імена. Якщо в рядку вони не заповнені —
-                # не вигадуємо їх із кількості дітей.
-                if not child_name:
-                    child_name = "—"
-
-                created_at = _google_created_at(
-                    _google_cell(csv_row, columns, "created"),
-                    event_date,
-                )
-
-                source_text = "|".join(
-                    [
-                        _google_key(restaurant),
-                        event_date,
-                        phone_key,
-                        _google_key(parent_name),
-                        _google_key(child_name),
-                    ]
-                )
-                source_key = hashlib.sha256(
-                    source_text.encode("utf-8")
-                ).hexdigest()
-
-                existing_source = conn.execute(
-                    """
-                    SELECT id
-                    FROM mk_registrations
-                    WHERE google_source_key=?
-                    """,
-                    (source_key,),
-                ).fetchone()
-                if existing_source:
-                    continue
-
-                # Не дублюємо локальний запис бота, який уже відправився в Google.
-                candidates = conn.execute(
-                    """
-                    SELECT id, requester_name, child_name, phone_number
-                    FROM mk_registrations
-                    WHERE group_id=? AND event_date=?
-                    """,
-                    (group_id, event_date),
-                ).fetchall()
-
-                matched_id = None
-                for reg_id, local_parent, local_child, local_phone in candidates:
-                    same_phone = (
-                        phone_key
-                        and _google_phone_key(local_phone) == phone_key
-                    )
-                    same_parent = (
-                        _google_key(local_parent) == _google_key(parent_name)
-                    )
-                    same_child = (
-                        _google_key(local_child) == _google_key(child_name)
-                    )
-
-                    # Телефон + ім'я дитини достатні для надійного збігу;
-                    # якщо телефону немає — використовуємо батьків + дитину.
-                    if (
-                        (same_phone and same_child)
-                        or (not phone_key and same_parent and same_child)
-                    ):
-                        matched_id = reg_id
-                        break
-
-                if matched_id is not None:
-                    conn.execute(
-                        """
-                        UPDATE mk_registrations
-                        SET google_source_key=?
-                        WHERE id=? AND google_source_key IS NULL
-                        """,
-                        (source_key, matched_id),
-                    )
-                    # Не відправляємо цей рядок назад у Google повторно.
-                    conn.execute(
-                        """
-                        INSERT INTO mk_google_sync(
-                            registration_id, synced, attempts, last_error, synced_at
-                        )
-                        VALUES(?,1,0,NULL,?)
-                        ON CONFLICT(registration_id) DO UPDATE SET
-                            synced=1,
-                            last_error=NULL,
-                            synced_at=excluded.synced_at
-                        """,
-                        (
-                            matched_id,
-                            datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
-                        ),
-                    )
-                    continue
-
-                schedule_row = conn.execute(
-                    """
-                    SELECT title
-                    FROM mk_schedule
-                    WHERE group_id=? AND event_date=?
-                    ORDER BY id
-                    LIMIT 1
-                    """,
-                    (group_id, event_date),
-                ).fetchone()
-                event_title = schedule_row[0] if schedule_row else ""
-
-                cursor = conn.execute(
-                    """
-                    INSERT INTO mk_registrations(
-                        group_id,
-                        group_title,
-                        requester_id,
-                        requester_name,
-                        child_name,
-                        phone_number,
-                        created_at,
-                        event_date,
-                        event_title,
-                        attendance_status,
-                        google_source_key
-                    )
-                    VALUES(?,?,?,?,?,?,?,?,?,?,?)
-                    """,
-                    (
-                        group_id,
-                        group_title,
-                        0,
-                        parent_name or "—",
-                        child_name,
-                        phone_number,
-                        created_at,
-                        event_date,
-                        event_title,
-                        "yes",
-                        source_key,
-                    ),
-                )
-                registration_id = cursor.lastrowid
-
-                # Це вже запис із Google — не треба відправляти його назад.
-                conn.execute(
-                    """
-                    INSERT INTO mk_google_sync(
-                        registration_id, synced, attempts, last_error, synced_at
-                    )
-                    VALUES(?,1,0,NULL,?)
-                    ON CONFLICT(registration_id) DO UPDATE SET
-                        synced=1,
-                        last_error=NULL,
-                        synced_at=excluded.synced_at
-                    """,
-                    (
-                        registration_id,
-                        datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S"),
-                    ),
-                )
-                imported += 1
-
-            conn.commit()
-
-        _google_mk_last_read_at = time.time()
-
-        if imported:
-            logging.info(
-                "Google MK: імпортовано %s нових записів для Mini App",
-                imported,
-            )
-
-        return imported
 
 
 
@@ -4225,13 +3890,16 @@ def cleanup_old_mk_registrations():
         placeholders = ",".join("?" for _ in old_ids)
 
         # Спочатку прибираємо службові записи синхронізації.
-        conn.execute(
-            f"""
-            DELETE FROM mk_google_sync
-            WHERE registration_id IN ({placeholders})
-            """,
-            old_ids,
-        )
+        try:
+            conn.execute(
+                f"""
+                DELETE FROM mk_google_sync
+                WHERE registration_id IN ({placeholders})
+                """,
+                old_ids,
+            )
+        except sqlite3.OperationalError:
+            pass
 
         cursor = conn.execute(
             f"""
@@ -4269,6 +3937,111 @@ async def mk_registration_cleanup_scheduler(application):
         await asyncio.sleep(24 * 60 * 60)
 
 
+
+# ============================================================
+# GOOGLE FORM -> НАША БАЗА / MINI APP
+# ============================================================
+
+
+def _external_text(value):
+    return re.sub(r"\s+", " ", str(value or "")).strip()
+
+
+def _external_key(value):
+    value = _external_text(value).casefold()
+    value = value.replace("’", "'").replace("ʼ", "'").replace("`", "'")
+    value = re.sub(r"[^0-9a-zа-яіїєґ' ]+", " ", value, flags=re.IGNORECASE)
+    return re.sub(r"\s+", " ", value).strip()
+
+
+def _external_date_iso(value):
+    value = _external_text(value)
+    if not value:
+        return ""
+
+    match = re.match(r"^(\d{4}-\d{2}-\d{2})", value)
+    if match:
+        return match.group(1)
+
+    for fmt in ("%d.%m.%Y", "%d/%m/%Y", "%d-%m-%Y", "%d.%m.%y"):
+        try:
+            return datetime.strptime(value, fmt).strftime("%Y-%m-%d")
+        except ValueError:
+            pass
+
+    return ""
+
+
+def resolve_google_form_group(rest_value):
+    """Знаходить Telegram-групу за рестораном із Google Form."""
+    raw = _external_text(rest_value)
+    if not raw:
+        return None
+
+    groups = get_groups()
+
+    try:
+        requested_id = int(raw)
+    except ValueError:
+        requested_id = None
+
+    if requested_id is not None:
+        for group_id, title in groups:
+            if group_id == requested_id:
+                return group_id, title
+
+    wanted = _external_key(raw)
+
+    for group_id, title in groups:
+        if _external_key(title) == wanted:
+            return group_id, title
+
+    for group_id, title in groups:
+        configured = resolve_mk_restaurant_name(title)
+        if _external_key(configured) == wanted:
+            return group_id, title
+
+    return None
+
+
+def _external_registration_duplicate(
+    conn, *, group_id, event_date, phone_number, child_name
+):
+    """Захист від подвійного виклику одного Google Form submit."""
+    phone_digits = re.sub(r"\D", "", phone_number or "")
+    child_key = _external_key(child_name)
+    now = datetime.now(TIMEZONE)
+
+    rows = conn.execute(
+        """
+        SELECT id, phone_number, child_name, created_at
+        FROM mk_registrations
+        WHERE group_id=? AND event_date=?
+        ORDER BY id DESC
+        LIMIT 100
+        """,
+        (group_id, event_date),
+    ).fetchall()
+
+    for registration_id, old_phone, old_child, old_created in rows:
+        if phone_digits and re.sub(r"\D", "", old_phone or "") != phone_digits:
+            continue
+        if _external_key(old_child) != child_key:
+            continue
+
+        try:
+            created = datetime.strptime(old_created, "%Y-%m-%d %H:%M:%S").replace(
+                tzinfo=TIMEZONE
+            )
+            if abs((now - created).total_seconds()) <= 600:
+                return registration_id
+        except Exception:
+            return registration_id
+
+    return None
+
+
+
 # ============================================================
 # TELEGRAM MINI APP / WEB API
 # ============================================================
@@ -4281,7 +4054,7 @@ web_app.add_middleware(
     CORSMiddleware,
     allow_origins=WEB_ALLOWED_ORIGINS,
     allow_credentials=False,
-    allow_methods=["GET", "PATCH", "OPTIONS"],
+    allow_methods=["GET", "POST", "PATCH", "OPTIONS"],
     allow_headers=["Content-Type", "X-Telegram-Init-Data"],
 )
 
@@ -4379,6 +4152,166 @@ def _web_children_count(child_names):
         return 1
 
 
+@web_app.post("/api/registrations/google-form")
+async def web_google_form_registration(request: Request):
+    """
+    Google Form -> Apps Script -> цей endpoint -> SQLite -> Mini App.
+    Google Sheets у схемі більше не використовується.
+    """
+    try:
+        payload = await request.json()
+    except Exception:
+        raise HTTPException(status_code=400, detail="Очікується JSON")
+
+    parent_name = _external_text(payload.get("name"))
+    phone_number = normalize_phone(payload.get("phone"))
+    event_date = _external_date_iso(payload.get("date"))
+    restaurant = _external_text(payload.get("rest"))
+    child_name = normalized_children_names(payload.get("childrenNames"))
+
+    try:
+        children_count = int(str(payload.get("children", "")).strip())
+    except (TypeError, ValueError):
+        children_count = infer_children_count(child_name)
+
+    if children_count < 1:
+        children_count = 1
+
+    missing = []
+    if not parent_name:
+        missing.append("name")
+    if not phone_number:
+        missing.append("phone")
+    if not event_date:
+        missing.append("date")
+    if not restaurant:
+        missing.append("rest")
+    if not child_name:
+        missing.append("childrenNames")
+
+    if missing:
+        raise HTTPException(
+            status_code=400,
+            detail="Не заповнені поля: " + ", ".join(missing),
+        )
+
+    group = resolve_google_form_group(restaurant)
+    if not group:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"Ресторан «{restaurant}» не прив'язаний до Telegram-групи. "
+                "Перевірте MK_RESTAURANT_ALIASES."
+            ),
+        )
+
+    group_id, group_title = group
+
+    cutoff_date = (
+        datetime.now(TIMEZONE).date()
+        - timedelta(days=MK_REGISTRATION_RETENTION_DAYS)
+    ).isoformat()
+
+    if event_date < cutoff_date:
+        raise HTTPException(
+            status_code=400,
+            detail="Дата майстер-класу старша за термін зберігання",
+        )
+
+    created_at = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
+
+    with sqlite3.connect(DATABASE, timeout=10) as conn:
+        conn.execute("PRAGMA busy_timeout=10000")
+
+        duplicate_id = _external_registration_duplicate(
+            conn,
+            group_id=group_id,
+            event_date=event_date,
+            phone_number=phone_number,
+            child_name=child_name,
+        )
+
+        if duplicate_id:
+            return {
+                "ok": True,
+                "duplicate": True,
+                "registration_id": duplicate_id,
+            }
+
+        schedule_row = conn.execute(
+            """
+            SELECT title
+            FROM mk_schedule
+            WHERE group_id=? AND event_date=?
+            ORDER BY id
+            LIMIT 1
+            """,
+            (group_id, event_date),
+        ).fetchone()
+
+        event_title = schedule_row[0] if schedule_row else ""
+
+        cursor = conn.execute(
+            """
+            INSERT INTO mk_registrations(
+                group_id,
+                group_title,
+                requester_id,
+                requester_name,
+                child_name,
+                phone_number,
+                created_at,
+                event_date,
+                event_title,
+                attendance_status
+            )
+            VALUES(?,?,?,?,?,?,?,?,?,?)
+            """,
+            (
+                group_id,
+                group_title,
+                0,
+                parent_name,
+                child_name,
+                phone_number,
+                created_at,
+                event_date,
+                event_title,
+                "yes",
+            ),
+        )
+        registration_id = cursor.lastrowid
+        conn.commit()
+
+    logging.info(
+        "Google Form -> MK: registration=%s group=%s date=%s children=%s",
+        registration_id,
+        group_title,
+        event_date,
+        children_count,
+    )
+
+    # Только локальный резервный Excel; Google Sheets больше нет.
+    try:
+        await asyncio.to_thread(refresh_mk_registrations_excel)
+    except Exception:
+        logging.exception(
+            "Не вдалося оновити локальний Excel після зовнішнього запису %s",
+            registration_id,
+        )
+
+    return {
+        "ok": True,
+        "duplicate": False,
+        "registration_id": registration_id,
+        "group_id": group_id,
+        "restaurant": group_title,
+        "date": event_date,
+        "children": children_count,
+        "childrenNames": child_name,
+    }
+
+
 @web_app.get("/api/health")
 def web_health():
     return {"ok": True, "service": "evrasia-masterclass-api"}
@@ -4449,9 +4382,6 @@ def web_restaurants(request: Request, date: str | None = None):
 
     cleanup_old_mk_registrations()
 
-    # Додаємо в локальне представлення нові рядки з Google-таблиці.
-    sync_google_sheet_registrations_to_local()
-
     result = []
     with _web_db() as conn:
         for group_id, title in current["groups"]:
@@ -4479,10 +4409,6 @@ def web_registrations(
     current = _web_current_user(request)
 
     cleanup_old_mk_registrations()
-
-    # Підтягуємо записи, які існують у Google-таблиці, але могли
-    # бути створені не через Telegram-бота.
-    sync_google_sheet_registrations_to_local()
 
     allowed = _web_allowed_group_ids(current)
     if not allowed:
@@ -4695,7 +4621,8 @@ def main():
     )
     app.add_handler(
         CallbackQueryHandler(
-            broadcast_buttons, pattern=r"^broadcast_(?:send|cancel)$"
+            broadcast_buttons,
+            pattern=r"^broadcast_(?:pin|no_pin|send|cancel)$",
         ),
         group=1,
     )
