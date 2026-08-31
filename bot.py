@@ -757,8 +757,8 @@ def extract_child_name_from_booking_text(text):
 
     # Привітання.
     value = re.sub(
-        r"^\s*(?:доброго\s+(?:дня|ранку|вечора)|добрий\s+(?:день|вечір)|"
-        r"доброе\s+утро|добрый\s+(?:день|вечер)|вітаю|здравствуйте|привет)"
+        r"^\s*(?:доброго\s+(?:дня|ранку|вечора)|добрий\s+(?:день|ранок|вечір)|"
+        r"доброе\s+утро|добрый\s+(?:день|утро|вечер)|вітаю|здравствуйте|привет)"
         r"\s*[,!.:\-–—]*\s*",
         "",
         value,
@@ -1103,6 +1103,10 @@ async def mk_setting_buttons(
 async def _complete_mk_registration(
     message, chat, user, child_name, phone_number, context
 ):
+    cleaned_child_name = normalized_children_names(child_name)
+    if cleaned_child_name:
+        child_name = cleaned_child_name
+
     register_group(chat)
     user_name = user.full_name or str(user.id)
     created_at = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
@@ -2598,6 +2602,15 @@ async def _complete_mk_registration_with_schedule(
     child_name, phone_number, event_date, event_title,
     source_message_id=None, phone_was_in_group=False, prompt_message_id=None
 ):
+    # У базі та на сайті зберігаємо тільки ім'я/імена дітей,
+    # навіть якщо вище по ланцюжку випадково прийшла вся фраза гостя.
+    original_child_name = child_name
+    cleaned_child_name = normalized_children_names(child_name)
+    if cleaned_child_name:
+        child_name = cleaned_child_name
+    else:
+        child_name = clean_mk_name(original_child_name)
+
     created_at = datetime.now(TIMEZONE).strftime("%Y-%m-%d %H:%M:%S")
     phone_number = normalize_phone(phone_number)
     save_mk_phone(user_id, phone_number)
