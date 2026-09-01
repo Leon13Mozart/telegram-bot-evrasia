@@ -56,7 +56,9 @@ from telegram.ext import (
 # НАЛАШТУВАННЯ
 # ============================================================
 
-TOKEN = "8835839482:AAH1ygspDRkxuAUu0_AcJUqMkeK_hx7Vs8U"
+# Telegram Bot Token is stored only in the server environment.
+# Do NOT commit the real token to GitHub.
+TOKEN = os.getenv("BOT_TOKEN", "").strip()
 
 ADMINS = [
     929200380,
