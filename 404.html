@@ -1,110 +1,33 @@
 <!DOCTYPE html>
-<html lang="uk">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-  <title>Євразія — Майстер-класи</title>
-  <link rel="stylesheet" href="/style.css?v=20260901-1">
-  <script src="https://telegram.org/js/telegram-web-app.js"></script>
-</head>
-<body>
-  <div class="page">
-    <main class="app-card">
-      <header class="header">
-        <div class="logo">ЄВРАЗІЯ</div>
-        <div class="user-role" id="userRole"></div>
-      </header>
+<html>
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Page Not Found</title>
 
-      <div class="developer-settings-entry" id="developerSettingsEntry" hidden>
-        <button type="button" class="developer-settings-button" id="developerSettingsButton">
-          <span class="developer-settings-icon">⚙️</span>
-          <span>Місця на МК</span>
-        </button>
-      </div>
-
-      <div id="recordsView">
-      <section class="intro">
-        <h1>Записи на майстер-класи</h1>
-        <p>Перегляд записів на дитячі майстер-класи. Усі майстер-класи проходять о 12:00.</p>
-      </section>
-
-      <section class="date-section">
-        <div class="section-label">Оберіть дату</div>
-        <div class="dates" id="dates"></div>
-      </section>
-
-      <section class="restaurant-filter-section" id="restaurantSection">
-        <div class="section-label">Ресторан</div>
-        <div class="restaurant-list" id="restaurantList"></div>
-        <div class="assigned-restaurant" id="assignedRestaurant">
-          <span>Ваш ресторан</span>
-          <strong id="assignedRestaurantName"></strong>
-        </div>
-      </section>
-
-      <section class="search-section">
-        <div class="search-box">
-          <span class="search-icon">⌕</span>
-          <input id="searchInput" type="text" placeholder="Пошук за ім'ям, дитиною або телефоном">
-        </div>
-      </section>
-
-      <section class="table-info">
-        <div><span class="selected-date-label">Майстер-класи:</span> <strong id="selectedDate">—</strong></div>
-        <div class="records-count" id="recordsCount">0 дітей</div>
-      </section>
-
-      <section class="table-container">
-        <table>
-          <thead>
-            <tr>
-              <th>Ресторан</th>
-              <th>Ім'я гостя</th>
-              <th>Ім'я дитини</th>
-              <th>Дітей</th>
-              <th>Телефон</th>
-              <th>Статус</th>
-            </tr>
-          </thead>
-          <tbody id="masterClassTable"></tbody>
-        </table>
-      </section>
-
-      <div class="empty-message" id="emptyMessage">На цю дату записів поки немає.</div>
-      <div class="error-message" id="errorMessage"></div>
-      </div>
-
-      <section class="settings-view" id="settingsView" hidden>
-        <div class="settings-toolbar">
-          <button type="button" class="back-to-records-button" id="backToRecordsButton">← Записи</button>
-        </div>
-        <div class="settings-heading">
-          <div>
-            <div class="settings-kicker">⚙️ Налаштування</div>
-            <h1>Місця на майстер-класи</h1>
-            <p>Встановіть максимальну кількість дітей окремо для кожного ресторану та дати.</p>
-          </div>
-          <button type="button" class="save-limits-button" id="saveLimitsButton">Зберегти зміни</button>
-        </div>
-
-        <div class="settings-table-wrap">
-          <table class="limits-table">
-            <thead id="limitsHead"></thead>
-            <tbody id="limitsBody"></tbody>
-          </table>
-        </div>
-
-        <div class="settings-note">
-          Порожнє поле означає — без ліміту. Значення <strong>0</strong> повністю закриває запис на цю дату.
-        </div>
-        <div class="settings-save-status" id="settingsSaveStatus"></div>
-      </section>
-
-      <footer class="footer">Майстер-класи щонеділі <strong>12:00</strong></footer>
-    </main>
-  </div>
-
-  <script src="/config.js"></script>
-<script src="/static/script.js?v=20260901-1"></script>
-</body>
+    <style media="screen">
+      body { background: #ECEFF1; color: rgba(0,0,0,0.87); font-family: Roboto, Helvetica, Arial, sans-serif; margin: 0; padding: 0; }
+      #message { background: white; max-width: 360px; margin: 100px auto 16px; padding: 32px 24px 16px; border-radius: 3px; }
+      #message h3 { color: #888; font-weight: normal; font-size: 16px; margin: 16px 0 12px; }
+      #message h2 { color: #ffa100; font-weight: bold; font-size: 16px; margin: 0 0 8px; }
+      #message h1 { font-size: 22px; font-weight: 300; color: rgba(0,0,0,0.6); margin: 0 0 16px;}
+      #message p { line-height: 140%; margin: 16px 0 24px; font-size: 14px; }
+      #message a { display: block; text-align: center; background: #039be5; text-transform: uppercase; text-decoration: none; color: white; padding: 16px; border-radius: 4px; }
+      #message, #message a { box-shadow: 0 1px 3px rgba(0,0,0,0.12), 0 1px 2px rgba(0,0,0,0.24); }
+      #load { color: rgba(0,0,0,0.4); text-align: center; font-size: 13px; }
+      @media (max-width: 600px) {
+        body, #message { margin-top: 0; background: white; box-shadow: none; }
+        body { border-top: 16px solid #ffa100; }
+      }
+    </style>
+  </head>
+  <body>
+    <div id="message">
+      <h2>404</h2>
+      <h1>Page Not Found</h1>
+      <p>The specified file was not found on this website. Please check the URL for mistakes and try again.</p>
+      <h3>Why am I seeing this?</h3>
+      <p>This page was generated by the Firebase Command-Line Interface. To modify it, edit the <code>404.html</code> file in your project's configured <code>public</code> directory.</p>
+    </div>
+  </body>
 </html>
