@@ -1,0 +1,481 @@
+/* Євразія МК — mobile-first UI */
+:root{
+  --bg:#f4f5f7;
+  --card:#ffffff;
+  --text:#171717;
+  --muted:#7a7f87;
+  --line:#e7e8eb;
+  --accent:#f4b800;
+  --accent-soft:#fff7d6;
+  --blue:#1296db;
+  --danger:#d84b4b;
+  --radius:18px;
+  --shadow:0 8px 28px rgba(0,0,0,.06);
+}
+
+*{box-sizing:border-box}
+html,body{margin:0;padding:0;min-height:100%;background:var(--bg);color:var(--text)}
+body{
+  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
+  -webkit-font-smoothing:antialiased;
+}
+button,input,select{font:inherit}
+button{-webkit-tap-highlight-color:transparent}
+[hidden]{display:none!important}
+
+.page{
+  width:100%;
+  min-height:100vh;
+  padding:14px 12px 28px;
+}
+
+.app-card{
+  width:min(100%,980px);
+  margin:0 auto;
+  background:var(--card);
+  border-radius:24px;
+  padding:18px;
+  box-shadow:var(--shadow);
+  overflow:hidden;
+}
+
+.header{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:14px;
+  padding-bottom:16px;
+  border-bottom:1px solid var(--line);
+}
+
+.logo{
+  font-size:23px;
+  line-height:1;
+  font-weight:950;
+  letter-spacing:.055em;
+  color:var(--text);
+}
+
+.user-role{
+  min-width:0;
+  text-align:right;
+  color:var(--muted);
+  font-size:13px;
+  line-height:1.35;
+  font-weight:650;
+}
+
+.intro{padding:18px 0 8px}
+.intro h1,
+.settings-view h1{
+  margin:0 0 7px;
+  font-size:24px;
+  line-height:1.15;
+  font-weight:900;
+}
+.intro p{
+  margin:0;
+  color:var(--muted);
+  font-size:14px;
+  line-height:1.45;
+}
+
+/* Developer settings */
+.developer-settings-entry[hidden],
+.settings-view[hidden]{display:none!important}
+
+.developer-settings-entry{margin:14px 0 2px}
+.developer-settings-button{
+  width:100%;
+  min-height:48px;
+  border:1px solid #efd67a;
+  background:var(--accent-soft);
+  color:#9a6b00;
+  border-radius:14px;
+  padding:11px 15px;
+  display:flex;
+  align-items:center;
+  justify-content:center;
+  gap:8px;
+  font-size:15px;
+  font-weight:850;
+  cursor:pointer;
+}
+.developer-settings-button:active{transform:scale(.995)}
+.developer-settings-icon{font-size:18px}
+
+/* Generic controls used by current JS */
+.filters,
+.filter-row,
+.controls{
+  display:flex;
+  flex-wrap:wrap;
+  gap:10px;
+  align-items:center;
+  margin:12px 0;
+}
+
+select,
+input[type="text"],
+input[type="tel"],
+input[type="number"],
+input[type="date"]{
+  width:100%;
+  min-height:46px;
+  border:1px solid var(--line);
+  border-radius:13px;
+  background:#fff;
+  color:var(--text);
+  padding:10px 12px;
+  outline:none;
+}
+select:focus,
+input:focus{border-color:#c8cbd0;box-shadow:0 0 0 3px rgba(0,0,0,.035)}
+
+button,
+.button,
+.primary-button,
+.save-limits-button{
+  border:0;
+  border-radius:13px;
+  min-height:44px;
+  padding:10px 15px;
+  font-weight:800;
+  cursor:pointer;
+}
+
+.primary-button,
+.save-limits-button{
+  background:var(--accent);
+  color:#171717;
+}
+
+/* Dates */
+.date-buttons,
+.dates,
+#dates,
+#dateButtons{
+  display:flex;
+  gap:8px;
+  overflow-x:auto;
+  padding:5px 1px 10px;
+  scrollbar-width:none;
+}
+.date-buttons::-webkit-scrollbar,
+.dates::-webkit-scrollbar,
+#dates::-webkit-scrollbar,
+#dateButtons::-webkit-scrollbar{display:none}
+
+.date-button,
+.date-btn{
+  flex:0 0 auto;
+  min-height:42px;
+  padding:9px 14px;
+  border:1px solid var(--line);
+  background:#fff;
+  border-radius:13px;
+  color:var(--text);
+  font-weight:750;
+}
+.date-button.active,
+.date-btn.active,
+.date-button.selected,
+.date-btn.selected{
+  background:#171717;
+  border-color:#171717;
+  color:#fff;
+}
+
+/* Restaurant cards */
+.restaurant-list,
+.restaurants,
+#restaurants,
+#restaurantList{
+  display:grid;
+  grid-template-columns:repeat(2,minmax(0,1fr));
+  gap:10px;
+  margin:12px 0 16px;
+}
+
+.restaurant-card,
+.restaurant-button,
+.restaurant-btn{
+  width:100%;
+  min-width:0;
+  min-height:58px;
+  border:1px solid var(--line);
+  background:#fff;
+  border-radius:15px;
+  padding:11px 13px;
+  color:var(--text);
+  text-align:left;
+  font-size:14px;
+  line-height:1.3;
+  font-weight:750;
+  overflow-wrap:anywhere;
+  box-shadow:0 2px 8px rgba(0,0,0,.025);
+}
+
+.restaurant-card.active,
+.restaurant-button.active,
+.restaurant-btn.active,
+.restaurant-card.selected,
+.restaurant-button.selected,
+.restaurant-btn.selected{
+  border-color:#171717;
+  background:#171717;
+  color:#fff;
+}
+
+/* Registrations */
+.table-wrap,
+.registrations-table-wrap,
+.settings-table-wrap{
+  width:100%;
+  overflow:auto;
+  border:1px solid var(--line);
+  border-radius:16px;
+  background:#fff;
+}
+
+table{
+  width:100%;
+  border-collapse:collapse;
+  border-spacing:0;
+}
+th{
+  background:#fafafa;
+  color:#696e75;
+  text-align:left;
+  font-size:12px;
+  font-weight:850;
+  padding:11px 12px;
+  border-bottom:1px solid var(--line);
+  white-space:nowrap;
+}
+td{
+  padding:12px;
+  border-bottom:1px solid #f0f0f1;
+  vertical-align:middle;
+  font-size:14px;
+}
+tr:last-child td{border-bottom:0}
+
+a[href^="tel:"]{
+  color:var(--blue);
+  text-decoration:none;
+  font-weight:750;
+}
+
+.status-button,
+.status-select{
+  border:1px solid var(--line);
+  border-radius:11px;
+  background:#fff;
+  min-height:38px;
+  padding:7px 10px;
+}
+
+.empty,
+.empty-state,
+.loading,
+.error{
+  margin:12px 0;
+  padding:16px;
+  border-radius:14px;
+  background:#fafafa;
+  color:var(--muted);
+  text-align:center;
+  line-height:1.4;
+}
+.error{color:var(--danger);background:#fff3f3}
+
+/* MK seat settings */
+.settings-view{margin-top:16px}
+.settings-toolbar{
+  display:flex;
+  align-items:center;
+  justify-content:space-between;
+  gap:10px;
+  margin-bottom:14px;
+}
+.back-to-records-button{
+  border:1px solid var(--line);
+  background:#fff;
+  color:#333;
+  border-radius:12px;
+  padding:9px 13px;
+  font-weight:800;
+}
+.settings-kicker{
+  color:#a87500;
+  font-size:12px;
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.06em;
+  margin-bottom:6px;
+}
+.save-limits-button{background:var(--accent);color:#171717}
+.limit-input{
+  width:92px!important;
+  min-height:40px!important;
+  text-align:center;
+  padding:7px 8px!important;
+}
+.limit-input:focus{
+  outline:none;
+  border-color:#d9a500;
+  box-shadow:0 0 0 3px rgba(244,184,0,.16);
+}
+.limits-restaurant-name{font-weight:850}
+.limits-enabled-cell{text-align:center}
+.limits-table input[type="checkbox"]{
+  width:20px;
+  height:20px;
+  accent-color:var(--accent);
+}
+.settings-note{
+  color:var(--muted);
+  font-size:13px;
+  line-height:1.45;
+  margin:12px 2px 0;
+}
+
+/* Modal compatibility */
+.modal[hidden],
+.phone-modal[hidden]{display:none!important}
+.modal,
+.phone-modal{
+  position:fixed;
+  inset:0;
+  z-index:1000;
+  display:flex;
+  align-items:flex-end;
+  justify-content:center;
+  padding:16px;
+  background:rgba(0,0,0,.38);
+}
+.modal-content,
+.phone-modal-content{
+  width:min(100%,520px);
+  background:#fff;
+  border-radius:22px;
+  padding:18px;
+  box-shadow:0 20px 60px rgba(0,0,0,.2);
+}
+
+/* Mobile */
+@media (max-width:700px){
+  .page{padding:0;background:#fff}
+  .app-card{
+    width:100%;
+    min-height:100vh;
+    margin:0;
+    border-radius:0;
+    box-shadow:none;
+    padding:16px 14px 26px;
+  }
+
+  .header{padding:3px 2px 14px}
+  .logo{font-size:21px}
+  .user-role{font-size:12px}
+
+  .intro{padding:16px 1px 6px}
+  .intro h1,.settings-view h1{font-size:21px}
+
+  .developer-settings-entry{margin:12px 0 4px}
+  .developer-settings-button{min-height:46px}
+
+  .restaurant-list,
+  .restaurants,
+  #restaurants,
+  #restaurantList{
+    grid-template-columns:1fr;
+    gap:8px;
+  }
+
+  .restaurant-card,
+  .restaurant-button,
+  .restaurant-btn{
+    min-height:54px;
+    border-radius:14px;
+    text-align:left;
+  }
+
+  .settings-toolbar{
+    position:sticky;
+    top:0;
+    z-index:10;
+    padding:7px 0 10px;
+    background:#fff;
+  }
+
+  .settings-table-wrap{
+    border:0;
+    overflow:visible;
+    background:transparent;
+  }
+  .limits-table{
+    display:block;
+    min-width:0!important;
+  }
+  .limits-table thead{display:none}
+  .limits-table tbody{display:block}
+  .limits-table tr[data-group-id]{
+    display:block;
+    border:1px solid var(--line);
+    border-radius:16px;
+    padding:13px;
+    margin-bottom:10px;
+    background:#fff;
+    box-shadow:0 3px 12px rgba(0,0,0,.035);
+  }
+  .limits-table td{
+    display:block;
+    border:0;
+    padding:6px 0;
+  }
+  .limits-restaurant-name{
+    font-size:15px;
+    padding-bottom:9px!important;
+  }
+  .limits-enabled-cell{
+    display:flex!important;
+    align-items:center;
+    justify-content:space-between;
+    gap:10px;
+    text-align:left;
+    border-top:1px solid #f0f0f0!important;
+    padding-top:10px!important;
+  }
+  .limits-enabled-cell::before{
+    content:"Ресторан відкритий для запису";
+    font-weight:750;
+    font-size:13px;
+  }
+  .limits-table td:has(.limit-input){
+    display:grid;
+    grid-template-columns:minmax(0,1fr) 96px;
+    align-items:center;
+    gap:10px;
+    border-top:1px solid #f0f0f0;
+    padding:9px 0;
+  }
+  .limit-input{width:96px!important}
+
+  /* Ordinary registration tables remain horizontally scrollable,
+     so names/phones/status do not merge together. */
+  .table-wrap,
+  .registrations-table-wrap{
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+  }
+  .table-wrap table,
+  .registrations-table-wrap table{
+    min-width:650px;
+  }
+}
+
+@media (min-width:701px){
+  .page{padding:24px}
+}
