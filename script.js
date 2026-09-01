@@ -1,4 +1,4 @@
-const API_BASE = (window.MK_API_BASE || "").replace(/\/$/, "");
+const API_BASE = "";
 
 const tg = window.Telegram?.WebApp;
 if (tg) {
@@ -11,9 +11,7 @@ const state = {
   dates: [],
   selectedDate: null,
   selectedGroupId: null,
-  search: "",
-  currentView: "records",
-  limitsData: null
+  search: ""
 };
 
 const el = {
@@ -28,16 +26,17 @@ const el = {
   tableBody: document.getElementById("masterClassTable"),
   empty: document.getElementById("emptyMessage"),
   error: document.getElementById("errorMessage"),
+  appTabs: document.getElementById("appTabs"),
+  settingsTabButton: document.getElementById("settingsTabButton"),
   recordsView: document.getElementById("recordsView"),
   settingsView: document.getElementById("settingsView"),
-  developerSettingsEntry: document.getElementById("developerSettingsEntry"),
-  developerSettingsButton: document.getElementById("developerSettingsButton"),
-  backToRecordsButton: document.getElementById("backToRecordsButton"),
   limitsHead: document.getElementById("limitsHead"),
   limitsBody: document.getElementById("limitsBody"),
   saveLimitsButton: document.getElementById("saveLimitsButton"),
   settingsSaveStatus: document.getElementById("settingsSaveStatus")
 };
+
+let limitsData = null;
 
 function authHeaders(extra = {}) {
   return {
@@ -75,7 +74,7 @@ function roleName(role) {
 async function loadMe() {
   state.me = await api("/api/me");
   el.userRole.textContent = `${state.me.name || ""}${state.me.name ? " · " : ""}${roleName(state.me.role)}`;
-  el.developerSettingsEntry.hidden = state.me.role !== "developer";
+  if (el.settingsTabButton) el.settingsTabButton.hidden = state.me.role !== "developer";
 
   if (state.me.role === "admin") {
     el.restaurantList.style.display = "none";
@@ -118,45 +117,19 @@ function renderDates() {
 
 async function loadRestaurants() {
   if (!state.selectedDate) return;
-
-  const restaurantData = await api(`/api/restaurants?date=${encodeURIComponent(state.selectedDate)}`);
-  const restaurants = restaurantData.restaurants || [];
-
-  // Кількість біля ресторану тепер показує не кількість заявок,
-  // а загальну кількість записаних дітей.
-  const registrationData = await api(
-    `/api/registrations?date=${encodeURIComponent(state.selectedDate)}`
-  );
-  const registrations = registrationData.registrations || [];
-
-  const childrenByGroup = new Map();
-  let totalChildren = 0;
-
-  for (const item of registrations) {
-    const children = Number(item.children) || 0;
-    totalChildren += children;
-
-    const groupId = Number(item.group_id);
-    childrenByGroup.set(
-      groupId,
-      (childrenByGroup.get(groupId) || 0) + children
-    );
-  }
+  const data = await api(`/api/restaurants?date=${encodeURIComponent(state.selectedDate)}`);
+  const restaurants = data.restaurants || [];
 
   if (state.me.role === "admin") {
     if (restaurants.length === 1) state.selectedGroupId = restaurants[0].id;
-    el.assignedRestaurantName.textContent =
-      restaurants.map(r => r.name).join(", ") || "Ресторан не призначено";
+    el.assignedRestaurantName.textContent = restaurants.map(r => r.name).join(", ") || "Ресторан не призначено";
     return;
   }
 
   el.restaurantList.innerHTML = "";
-  addRestaurantButton(null, "Всі ресторани", totalChildren);
-
-  for (const r of restaurants) {
-    const childrenCount = childrenByGroup.get(Number(r.id)) || 0;
-    addRestaurantButton(r.id, r.name, childrenCount);
-  }
+  const total = restaurants.reduce((sum, r) => sum + r.count, 0);
+  addRestaurantButton(null, "Всі ресторани", total);
+  for (const r of restaurants) addRestaurantButton(r.id, r.name, r.count);
 }
 
 function addRestaurantButton(id, name, count) {
@@ -181,7 +154,7 @@ async function loadRegistrations() {
   if (!state.selectedDate) {
     el.tableBody.innerHTML = "";
     el.selectedDate.textContent = "—";
-    el.recordsCount.textContent = "0 дітей";
+    el.recordsCount.textContent = "0 записів";
     el.empty.style.display = "block";
     return;
   }
@@ -193,11 +166,7 @@ async function loadRegistrations() {
   const rows = data.registrations || [];
 
   el.selectedDate.textContent = formatDate(state.selectedDate);
-  const totalChildren = rows.reduce(
-    (sum, item) => sum + (Number(item.children) || 0),
-    0
-  );
-  el.recordsCount.textContent = `${totalChildren} дітей`;
+  el.recordsCount.textContent = `${rows.length} записів`;
   el.tableBody.innerHTML = "";
   el.empty.style.display = rows.length ? "none" : "block";
 
@@ -385,163 +354,144 @@ function cellStatus(item) {
   return td;
 }
 
-
-function switchView(view) {
-  if (view === "settings" && state.me?.role !== "developer") return;
-
-  state.currentView = view;
-  el.recordsView.hidden = view !== "records";
-  el.settingsView.hidden = view !== "settings";
-
-  if (view === "settings") {
-    loadLimits().catch(err => showSettingsStatus(err.message, true));
-  }
+function showError(message) {
+  el.error.textContent = message;
+  el.error.style.display = "block";
 }
 
-function showSettingsStatus(message, isError = false) {
-  el.settingsSaveStatus.textContent = message || "";
-  el.settingsSaveStatus.classList.toggle("error", Boolean(isError));
+
+function switchView(view) {
+  const settings = view === "settings";
+  el.recordsView.hidden = settings;
+  el.settingsView.hidden = !settings;
+  el.appTabs?.querySelectorAll(".app-tab").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.view === view);
+  });
 }
 
 async function loadLimits() {
-  showSettingsStatus("");
-  const data = await api("/api/limits");
-  state.limitsData = data;
+  if (state.me?.role !== "developer") return;
+  el.settingsSaveStatus.textContent = "Завантаження…";
+  limitsData = await api("/api/limits");
   renderLimits();
+  el.settingsSaveStatus.textContent = "";
 }
 
 function renderLimits() {
-  const data = state.limitsData || { dates: [], restaurants: [] };
-  const dates = data.dates || [];
-  const restaurants = data.restaurants || [];
+  if (!limitsData) return;
+  const dates = limitsData.dates || [];
+  const restaurants = limitsData.restaurants || [];
 
   el.limitsHead.innerHTML = "";
+  const hr = document.createElement("tr");
+  for (const title of ["Ресторан", "Запис", ...dates.map(shortDate)]) {
+    const th = document.createElement("th");
+    th.textContent = title;
+    hr.appendChild(th);
+  }
+  el.limitsHead.appendChild(hr);
   el.limitsBody.innerHTML = "";
 
-  const headRow = document.createElement("tr");
-  const restaurantTh = document.createElement("th");
-  restaurantTh.className = "limits-restaurant-col";
-  restaurantTh.textContent = "Ресторан";
-
-  const enabledTh = document.createElement("th");
-  enabledTh.className = "limits-enabled-col";
-  enabledTh.textContent = "ВКЛ";
-
-  headRow.append(restaurantTh, enabledTh);
-
-  for (const date of dates) {
-    const th = document.createElement("th");
-    th.textContent = shortDate(date);
-    headRow.appendChild(th);
-  }
-  el.limitsHead.appendChild(headRow);
-
-  for (const restaurant of restaurants) {
+  for (const r of restaurants) {
     const tr = document.createElement("tr");
-    tr.dataset.groupId = restaurant.id;
+    tr.dataset.groupId = r.id ?? r.group_id;
 
-    const nameTd = document.createElement("td");
-    nameTd.className = "limits-restaurant-name";
-    nameTd.textContent = restaurant.name;
+    const name = document.createElement("td");
+    name.className = "limits-restaurant-name";
+    name.textContent = r.name || "—";
+    tr.appendChild(name);
 
-    const enabledTd = document.createElement("td");
-    enabledTd.className = "limits-enabled-cell";
+    const enabledCell = document.createElement("td");
+    enabledCell.className = "limits-enabled-cell";
     const enabled = document.createElement("input");
     enabled.type = "checkbox";
-    enabled.className = "limits-enabled-checkbox";
-    enabled.checked = restaurant.enabled !== false;
-    enabled.dataset.enabled = "1";
-    enabledTd.appendChild(enabled);
+    enabled.className = "limit-enabled";
+    enabled.checked = r.enabled !== false;
+    enabledCell.appendChild(enabled);
+    tr.appendChild(enabledCell);
 
-    tr.append(nameTd, enabledTd);
-
+    const limits = r.limits || {};
     for (const date of dates) {
+      const info = limits[date] || {};
       const td = document.createElement("td");
+      td.className = "limit-date-cell";
       td.dataset.dateLabel = shortDate(date);
+
       const input = document.createElement("input");
       input.type = "number";
-      input.inputMode = "numeric";
       input.min = "0";
       input.max = "999";
-      input.step = "1";
+      input.inputMode = "numeric";
       input.className = "limit-input";
       input.dataset.date = date;
-
-      const value = restaurant.limits?.[date];
-      input.value = value === null || value === undefined ? "" : String(value);
       input.placeholder = "∞";
+      input.value = info.seat_limit == null ? "" : info.seat_limit;
 
-      const occ = restaurant.occupancy?.[date] || {booked: 0, remaining: null};
       const meta = document.createElement("div");
       meta.className = "limit-meta";
-      meta.textContent = occ.remaining === null
-        ? `Записано: ${occ.booked || 0}`
-        : `Записано: ${occ.booked || 0} · Вільно: ${occ.remaining}`;
+      const booked = Number(info.booked_children ?? 0);
+      meta.textContent = info.remaining == null
+        ? `Записано: ${booked}`
+        : `Записано: ${booked} · Вільно: ${info.remaining}`;
 
       td.append(input, meta);
       tr.appendChild(td);
     }
-
-    el.limitsBody.appendChild(tr);
-  }
-
-  if (!restaurants.length) {
-    const tr = document.createElement("tr");
-    const td = document.createElement("td");
-    td.colSpan = Math.max(2, 2 + dates.length);
-    td.className = "limits-empty";
-    td.textContent = "Ресторани не знайдено.";
-    tr.appendChild(td);
     el.limitsBody.appendChild(tr);
   }
 }
 
 async function saveLimits() {
+  if (state.me?.role !== "developer") return;
   const restaurants = [];
 
-  for (const row of el.limitsBody.querySelectorAll("tr[data-group-id]")) {
+  el.limitsBody.querySelectorAll("tr[data-group-id]").forEach(tr => {
     const limits = {};
-    for (const input of row.querySelectorAll(".limit-input")) {
+    tr.querySelectorAll(".limit-input").forEach(input => {
       const raw = input.value.trim();
       limits[input.dataset.date] = raw === "" ? null : Number(raw);
-    }
-
+    });
+    const groupId = Number(tr.dataset.groupId);
     restaurants.push({
-      id: Number(row.dataset.groupId),
-      enabled: row.querySelector(".limits-enabled-checkbox")?.checked !== false,
+      id: groupId,
+      group_id: groupId,
+      enabled: tr.querySelector(".limit-enabled")?.checked ?? true,
       limits
     });
-  }
+  });
 
   el.saveLimitsButton.disabled = true;
-  el.saveLimitsButton.textContent = "Збереження…";
-  showSettingsStatus("");
-
+  el.settingsSaveStatus.textContent = "Зберігаємо…";
   try {
     await api("/api/limits", {
       method: "PUT",
       headers: {"Content-Type": "application/json"},
       body: JSON.stringify({restaurants})
     });
-    showSettingsStatus("✓ Ліміти збережено");
+    el.settingsSaveStatus.textContent = "Збережено ✓";
     await loadLimits();
+    el.settingsSaveStatus.textContent = "Збережено ✓";
   } catch (err) {
-    showSettingsStatus(err.message, true);
+    el.settingsSaveStatus.textContent = err.message;
   } finally {
     el.saveLimitsButton.disabled = false;
-    el.saveLimitsButton.textContent = "Зберегти";
   }
 }
 
-el.developerSettingsButton.addEventListener("click", () => switchView("settings"));
-el.backToRecordsButton.addEventListener("click", () => switchView("records"));
-el.saveLimitsButton.addEventListener("click", saveLimits);
+el.appTabs?.addEventListener("click", async event => {
+  const button = event.target.closest(".app-tab");
+  if (!button) return;
+  if (button.dataset.view === "settings") {
+    if (state.me?.role !== "developer") return;
+    switchView("settings");
+    try { await loadLimits(); } catch (err) { el.settingsSaveStatus.textContent = err.message; }
+  } else {
+    switchView("records");
+  }
+});
 
+el.saveLimitsButton?.addEventListener("click", saveLimits);
 
-function showError(message) {
-  el.error.textContent = message;
-  el.error.style.display = "block";
-}
 
 let searchTimer;
 el.searchInput.addEventListener("input", () => {

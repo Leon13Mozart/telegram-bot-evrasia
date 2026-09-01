@@ -1,481 +1,513 @@
-/* Євразія МК — mobile-first UI */
-:root{
-  --bg:#f4f5f7;
-  --card:#ffffff;
-  --text:#171717;
-  --muted:#7a7f87;
-  --line:#e7e8eb;
-  --accent:#f4b800;
-  --accent-soft:#fff7d6;
-  --blue:#1296db;
-  --danger:#d84b4b;
-  --radius:18px;
-  --shadow:0 8px 28px rgba(0,0,0,.06);
+const API_BASE = "";
+
+const tg = window.Telegram?.WebApp;
+if (tg) {
+  tg.ready();
+  tg.expand();
 }
 
-*{box-sizing:border-box}
-html,body{margin:0;padding:0;min-height:100%;background:var(--bg);color:var(--text)}
-body{
-  font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
-  -webkit-font-smoothing:antialiased;
-}
-button,input,select{font:inherit}
-button{-webkit-tap-highlight-color:transparent}
-[hidden]{display:none!important}
+const state = {
+  me: null,
+  dates: [],
+  selectedDate: null,
+  selectedGroupId: null,
+  search: ""
+};
 
-.page{
-  width:100%;
-  min-height:100vh;
-  padding:14px 12px 28px;
-}
+const el = {
+  userRole: document.getElementById("userRole"),
+  dates: document.getElementById("dates"),
+  restaurantList: document.getElementById("restaurantList"),
+  assignedRestaurant: document.getElementById("assignedRestaurant"),
+  assignedRestaurantName: document.getElementById("assignedRestaurantName"),
+  searchInput: document.getElementById("searchInput"),
+  selectedDate: document.getElementById("selectedDate"),
+  recordsCount: document.getElementById("recordsCount"),
+  tableBody: document.getElementById("masterClassTable"),
+  empty: document.getElementById("emptyMessage"),
+  error: document.getElementById("errorMessage"),
+  appTabs: document.getElementById("appTabs"),
+  settingsTabButton: document.getElementById("settingsTabButton"),
+  recordsView: document.getElementById("recordsView"),
+  settingsView: document.getElementById("settingsView"),
+  limitsHead: document.getElementById("limitsHead"),
+  limitsBody: document.getElementById("limitsBody"),
+  saveLimitsButton: document.getElementById("saveLimitsButton"),
+  settingsSaveStatus: document.getElementById("settingsSaveStatus")
+};
 
-.app-card{
-  width:min(100%,980px);
-  margin:0 auto;
-  background:var(--card);
-  border-radius:24px;
-  padding:18px;
-  box-shadow:var(--shadow);
-  overflow:hidden;
-}
+let limitsData = null;
 
-.header{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:14px;
-  padding-bottom:16px;
-  border-bottom:1px solid var(--line);
-}
-
-.logo{
-  font-size:23px;
-  line-height:1;
-  font-weight:950;
-  letter-spacing:.055em;
-  color:var(--text);
+function authHeaders(extra = {}) {
+  return {
+    "X-Telegram-Init-Data": tg?.initData || "",
+    ...extra
+  };
 }
 
-.user-role{
-  min-width:0;
-  text-align:right;
-  color:var(--muted);
-  font-size:13px;
-  line-height:1.35;
-  font-weight:650;
+async function api(path, options = {}) {
+  const response = await fetch(`${API_BASE}${path}`, {
+    ...options,
+    headers: authHeaders(options.headers || {})
+  });
+  let data = {};
+  try { data = await response.json(); } catch (_) {}
+  if (!response.ok) throw new Error(data.detail || "Помилка сервера");
+  return data;
 }
 
-.intro{padding:18px 0 8px}
-.intro h1,
-.settings-view h1{
-  margin:0 0 7px;
-  font-size:24px;
-  line-height:1.15;
-  font-weight:900;
-}
-.intro p{
-  margin:0;
-  color:var(--muted);
-  font-size:14px;
-  line-height:1.45;
+function formatDate(iso) {
+  if (!iso) return "—";
+  const [y,m,d] = iso.split("-");
+  return `${d}.${m}.${y}`;
 }
 
-/* Developer settings */
-.developer-settings-entry[hidden],
-.settings-view[hidden]{display:none!important}
-
-.developer-settings-entry{margin:14px 0 2px}
-.developer-settings-button{
-  width:100%;
-  min-height:48px;
-  border:1px solid #efd67a;
-  background:var(--accent-soft);
-  color:#9a6b00;
-  border-radius:14px;
-  padding:11px 15px;
-  display:flex;
-  align-items:center;
-  justify-content:center;
-  gap:8px;
-  font-size:15px;
-  font-weight:850;
-  cursor:pointer;
-}
-.developer-settings-button:active{transform:scale(.995)}
-.developer-settings-icon{font-size:18px}
-
-/* Generic controls used by current JS */
-.filters,
-.filter-row,
-.controls{
-  display:flex;
-  flex-wrap:wrap;
-  gap:10px;
-  align-items:center;
-  margin:12px 0;
+function shortDate(iso) {
+  const [y,m,d] = iso.split("-");
+  return `${d}.${m}`;
 }
 
-select,
-input[type="text"],
-input[type="tel"],
-input[type="number"],
-input[type="date"]{
-  width:100%;
-  min-height:46px;
-  border:1px solid var(--line);
-  border-radius:13px;
-  background:#fff;
-  color:var(--text);
-  padding:10px 12px;
-  outline:none;
-}
-select:focus,
-input:focus{border-color:#c8cbd0;box-shadow:0 0 0 3px rgba(0,0,0,.035)}
-
-button,
-.button,
-.primary-button,
-.save-limits-button{
-  border:0;
-  border-radius:13px;
-  min-height:44px;
-  padding:10px 15px;
-  font-weight:800;
-  cursor:pointer;
+function roleName(role) {
+  return ({developer:"Розробник", manager:"Керуючий", admin:"Адміністратор"})[role] || role;
 }
 
-.primary-button,
-.save-limits-button{
-  background:var(--accent);
-  color:#171717;
-}
+async function loadMe() {
+  state.me = await api("/api/me");
+  el.userRole.textContent = `${state.me.name || ""}${state.me.name ? " · " : ""}${roleName(state.me.role)}`;
+  if (el.settingsTabButton) el.settingsTabButton.hidden = state.me.role !== "developer";
 
-/* Dates */
-.date-buttons,
-.dates,
-#dates,
-#dateButtons{
-  display:flex;
-  gap:8px;
-  overflow-x:auto;
-  padding:5px 1px 10px;
-  scrollbar-width:none;
-}
-.date-buttons::-webkit-scrollbar,
-.dates::-webkit-scrollbar,
-#dates::-webkit-scrollbar,
-#dateButtons::-webkit-scrollbar{display:none}
-
-.date-button,
-.date-btn{
-  flex:0 0 auto;
-  min-height:42px;
-  padding:9px 14px;
-  border:1px solid var(--line);
-  background:#fff;
-  border-radius:13px;
-  color:var(--text);
-  font-weight:750;
-}
-.date-button.active,
-.date-btn.active,
-.date-button.selected,
-.date-btn.selected{
-  background:#171717;
-  border-color:#171717;
-  color:#fff;
-}
-
-/* Restaurant cards */
-.restaurant-list,
-.restaurants,
-#restaurants,
-#restaurantList{
-  display:grid;
-  grid-template-columns:repeat(2,minmax(0,1fr));
-  gap:10px;
-  margin:12px 0 16px;
-}
-
-.restaurant-card,
-.restaurant-button,
-.restaurant-btn{
-  width:100%;
-  min-width:0;
-  min-height:58px;
-  border:1px solid var(--line);
-  background:#fff;
-  border-radius:15px;
-  padding:11px 13px;
-  color:var(--text);
-  text-align:left;
-  font-size:14px;
-  line-height:1.3;
-  font-weight:750;
-  overflow-wrap:anywhere;
-  box-shadow:0 2px 8px rgba(0,0,0,.025);
-}
-
-.restaurant-card.active,
-.restaurant-button.active,
-.restaurant-btn.active,
-.restaurant-card.selected,
-.restaurant-button.selected,
-.restaurant-btn.selected{
-  border-color:#171717;
-  background:#171717;
-  color:#fff;
-}
-
-/* Registrations */
-.table-wrap,
-.registrations-table-wrap,
-.settings-table-wrap{
-  width:100%;
-  overflow:auto;
-  border:1px solid var(--line);
-  border-radius:16px;
-  background:#fff;
-}
-
-table{
-  width:100%;
-  border-collapse:collapse;
-  border-spacing:0;
-}
-th{
-  background:#fafafa;
-  color:#696e75;
-  text-align:left;
-  font-size:12px;
-  font-weight:850;
-  padding:11px 12px;
-  border-bottom:1px solid var(--line);
-  white-space:nowrap;
-}
-td{
-  padding:12px;
-  border-bottom:1px solid #f0f0f1;
-  vertical-align:middle;
-  font-size:14px;
-}
-tr:last-child td{border-bottom:0}
-
-a[href^="tel:"]{
-  color:var(--blue);
-  text-decoration:none;
-  font-weight:750;
-}
-
-.status-button,
-.status-select{
-  border:1px solid var(--line);
-  border-radius:11px;
-  background:#fff;
-  min-height:38px;
-  padding:7px 10px;
-}
-
-.empty,
-.empty-state,
-.loading,
-.error{
-  margin:12px 0;
-  padding:16px;
-  border-radius:14px;
-  background:#fafafa;
-  color:var(--muted);
-  text-align:center;
-  line-height:1.4;
-}
-.error{color:var(--danger);background:#fff3f3}
-
-/* MK seat settings */
-.settings-view{margin-top:16px}
-.settings-toolbar{
-  display:flex;
-  align-items:center;
-  justify-content:space-between;
-  gap:10px;
-  margin-bottom:14px;
-}
-.back-to-records-button{
-  border:1px solid var(--line);
-  background:#fff;
-  color:#333;
-  border-radius:12px;
-  padding:9px 13px;
-  font-weight:800;
-}
-.settings-kicker{
-  color:#a87500;
-  font-size:12px;
-  font-weight:900;
-  text-transform:uppercase;
-  letter-spacing:.06em;
-  margin-bottom:6px;
-}
-.save-limits-button{background:var(--accent);color:#171717}
-.limit-input{
-  width:92px!important;
-  min-height:40px!important;
-  text-align:center;
-  padding:7px 8px!important;
-}
-.limit-input:focus{
-  outline:none;
-  border-color:#d9a500;
-  box-shadow:0 0 0 3px rgba(244,184,0,.16);
-}
-.limits-restaurant-name{font-weight:850}
-.limits-enabled-cell{text-align:center}
-.limits-table input[type="checkbox"]{
-  width:20px;
-  height:20px;
-  accent-color:var(--accent);
-}
-.settings-note{
-  color:var(--muted);
-  font-size:13px;
-  line-height:1.45;
-  margin:12px 2px 0;
-}
-
-/* Modal compatibility */
-.modal[hidden],
-.phone-modal[hidden]{display:none!important}
-.modal,
-.phone-modal{
-  position:fixed;
-  inset:0;
-  z-index:1000;
-  display:flex;
-  align-items:flex-end;
-  justify-content:center;
-  padding:16px;
-  background:rgba(0,0,0,.38);
-}
-.modal-content,
-.phone-modal-content{
-  width:min(100%,520px);
-  background:#fff;
-  border-radius:22px;
-  padding:18px;
-  box-shadow:0 20px 60px rgba(0,0,0,.2);
-}
-
-/* Mobile */
-@media (max-width:700px){
-  .page{padding:0;background:#fff}
-  .app-card{
-    width:100%;
-    min-height:100vh;
-    margin:0;
-    border-radius:0;
-    box-shadow:none;
-    padding:16px 14px 26px;
-  }
-
-  .header{padding:3px 2px 14px}
-  .logo{font-size:21px}
-  .user-role{font-size:12px}
-
-  .intro{padding:16px 1px 6px}
-  .intro h1,.settings-view h1{font-size:21px}
-
-  .developer-settings-entry{margin:12px 0 4px}
-  .developer-settings-button{min-height:46px}
-
-  .restaurant-list,
-  .restaurants,
-  #restaurants,
-  #restaurantList{
-    grid-template-columns:1fr;
-    gap:8px;
-  }
-
-  .restaurant-card,
-  .restaurant-button,
-  .restaurant-btn{
-    min-height:54px;
-    border-radius:14px;
-    text-align:left;
-  }
-
-  .settings-toolbar{
-    position:sticky;
-    top:0;
-    z-index:10;
-    padding:7px 0 10px;
-    background:#fff;
-  }
-
-  .settings-table-wrap{
-    border:0;
-    overflow:visible;
-    background:transparent;
-  }
-  .limits-table{
-    display:block;
-    min-width:0!important;
-  }
-  .limits-table thead{display:none}
-  .limits-table tbody{display:block}
-  .limits-table tr[data-group-id]{
-    display:block;
-    border:1px solid var(--line);
-    border-radius:16px;
-    padding:13px;
-    margin-bottom:10px;
-    background:#fff;
-    box-shadow:0 3px 12px rgba(0,0,0,.035);
-  }
-  .limits-table td{
-    display:block;
-    border:0;
-    padding:6px 0;
-  }
-  .limits-restaurant-name{
-    font-size:15px;
-    padding-bottom:9px!important;
-  }
-  .limits-enabled-cell{
-    display:flex!important;
-    align-items:center;
-    justify-content:space-between;
-    gap:10px;
-    text-align:left;
-    border-top:1px solid #f0f0f0!important;
-    padding-top:10px!important;
-  }
-  .limits-enabled-cell::before{
-    content:"Ресторан відкритий для запису";
-    font-weight:750;
-    font-size:13px;
-  }
-  .limits-table td:has(.limit-input){
-    display:grid;
-    grid-template-columns:minmax(0,1fr) 96px;
-    align-items:center;
-    gap:10px;
-    border-top:1px solid #f0f0f0;
-    padding:9px 0;
-  }
-  .limit-input{width:96px!important}
-
-  /* Ordinary registration tables remain horizontally scrollable,
-     so names/phones/status do not merge together. */
-  .table-wrap,
-  .registrations-table-wrap{
-    overflow-x:auto;
-    -webkit-overflow-scrolling:touch;
-  }
-  .table-wrap table,
-  .registrations-table-wrap table{
-    min-width:650px;
+  if (state.me.role === "admin") {
+    el.restaurantList.style.display = "none";
+    el.assignedRestaurant.style.display = "block";
+    const names = state.me.restaurants.map(r => r.name).join(", ") || "Ресторан не призначено";
+    el.assignedRestaurantName.textContent = names;
+    state.selectedGroupId = state.me.restaurants.length === 1 ? state.me.restaurants[0].id : null;
+  } else {
+    el.restaurantList.style.display = "flex";
+    el.assignedRestaurant.style.display = "none";
   }
 }
 
-@media (min-width:701px){
-  .page{padding:24px}
+async function loadDates() {
+  const data = await api("/api/dates");
+  state.dates = data.dates || [];
+  const today = new Date();
+  const todayIso = `${today.getFullYear()}-${String(today.getMonth()+1).padStart(2,"0")}-${String(today.getDate()).padStart(2,"0")}`;
+  state.selectedDate = state.dates.find(d => d >= todayIso) || state.dates[state.dates.length - 1] || null;
+  renderDates();
 }
+
+function renderDates() {
+  el.dates.innerHTML = "";
+  for (const date of state.dates) {
+    const button = document.createElement("button");
+    button.className = `date-button${date === state.selectedDate ? " active" : ""}`;
+    button.textContent = shortDate(date);
+    button.addEventListener("click", async () => {
+      state.selectedDate = date;
+      state.search = "";
+      el.searchInput.value = "";
+      renderDates();
+      await loadRestaurants();
+      await loadRegistrations();
+    });
+    el.dates.appendChild(button);
+  }
+}
+
+async function loadRestaurants() {
+  if (!state.selectedDate) return;
+  const data = await api(`/api/restaurants?date=${encodeURIComponent(state.selectedDate)}`);
+  const restaurants = data.restaurants || [];
+
+  if (state.me.role === "admin") {
+    if (restaurants.length === 1) state.selectedGroupId = restaurants[0].id;
+    el.assignedRestaurantName.textContent = restaurants.map(r => r.name).join(", ") || "Ресторан не призначено";
+    return;
+  }
+
+  el.restaurantList.innerHTML = "";
+  const total = restaurants.reduce((sum, r) => sum + r.count, 0);
+  addRestaurantButton(null, "Всі ресторани", total);
+  for (const r of restaurants) addRestaurantButton(r.id, r.name, r.count);
+}
+
+function addRestaurantButton(id, name, count) {
+  const button = document.createElement("button");
+  button.className = `restaurant-button${state.selectedGroupId === id ? " active" : ""}`;
+  const label = document.createElement("span");
+  label.textContent = name;
+  const badge = document.createElement("span");
+  badge.className = "restaurant-button-count";
+  badge.textContent = count;
+  button.append(label, badge);
+  button.addEventListener("click", async () => {
+    state.selectedGroupId = id;
+    await loadRestaurants();
+    await loadRegistrations();
+  });
+  el.restaurantList.appendChild(button);
+}
+
+async function loadRegistrations() {
+  el.error.style.display = "none";
+  if (!state.selectedDate) {
+    el.tableBody.innerHTML = "";
+    el.selectedDate.textContent = "—";
+    el.recordsCount.textContent = "0 записів";
+    el.empty.style.display = "block";
+    return;
+  }
+
+  const params = new URLSearchParams({date: state.selectedDate});
+  if (state.selectedGroupId !== null) params.set("group_id", state.selectedGroupId);
+  if (state.search) params.set("q", state.search);
+  const data = await api(`/api/registrations?${params.toString()}`);
+  const rows = data.registrations || [];
+
+  el.selectedDate.textContent = formatDate(state.selectedDate);
+  el.recordsCount.textContent = `${rows.length} записів`;
+  el.tableBody.innerHTML = "";
+  el.empty.style.display = rows.length ? "none" : "block";
+
+  for (const item of rows) {
+    const tr = document.createElement("tr");
+    tr.append(
+      cellText(item.restaurant, "restaurant-name"),
+      cellText(item.guest_name, "guest-name"),
+      cellText(item.child_name, "child-name"),
+      cellChildren(item.children),
+      cellPhone(item.phone),
+      cellStatus(item)
+    );
+    el.tableBody.appendChild(tr);
+  }
+}
+
+function cellText(text, className) {
+  const td = document.createElement("td");
+  const span = document.createElement("span");
+  span.className = className;
+  span.textContent = text || "—";
+  td.appendChild(span);
+  return td;
+}
+
+function cellChildren(count) {
+  const td = document.createElement("td");
+  const span = document.createElement("span");
+  span.className = "children-count";
+  span.textContent = count;
+  td.appendChild(span);
+  return td;
+}
+
+
+
+function normalizePhoneForCall(phone) {
+  return String(phone || "").replace(/[^\d+]/g, "");
+}
+
+function ensurePhoneModal() {
+  let modal = document.getElementById("phoneActionModal");
+  if (modal) return modal;
+
+  modal = document.createElement("div");
+  modal.id = "phoneActionModal";
+  modal.className = "phone-modal";
+  modal.innerHTML = `
+    <div class="phone-modal-backdrop" data-phone-close="1"></div>
+    <div class="phone-modal-card" role="dialog" aria-modal="true" aria-labelledby="phoneModalTitle">
+      <button class="phone-modal-close" type="button" aria-label="Закрити" data-phone-close="1">×</button>
+      <div class="phone-modal-label">Телефон</div>
+      <div class="phone-modal-number" id="phoneModalTitle">—</div>
+      <div class="phone-modal-actions">
+        <button type="button" class="phone-modal-btn phone-modal-copy" id="phoneCopyBtn">
+          Скопіювати номер
+        </button>
+        <a class="phone-modal-btn phone-modal-call" id="phoneCallLink" href="#">
+          Зателефонувати
+        </a>
+      </div>
+      <div class="phone-modal-hint">
+        Якщо Telegram не відкриє набір номера, скористайтеся кнопкою копіювання.
+      </div>
+    </div>
+  `;
+
+  document.body.appendChild(modal);
+
+  modal.addEventListener("click", (event) => {
+    if (event.target.closest("[data-phone-close='1']")) {
+      closePhoneModal();
+    }
+  });
+
+  return modal;
+}
+
+function closePhoneModal() {
+  const modal = document.getElementById("phoneActionModal");
+  if (modal) modal.classList.remove("open");
+}
+
+async function copyPhoneNumber(phone, button) {
+  const cleanPhone = normalizePhoneForCall(phone);
+  if (!cleanPhone) return;
+
+  try {
+    await navigator.clipboard.writeText(cleanPhone);
+    const oldText = button.textContent;
+    button.textContent = "Скопійовано ✓";
+    setTimeout(() => {
+      button.textContent = oldText;
+    }, 1400);
+    return;
+  } catch (_) {}
+
+  const textarea = document.createElement("textarea");
+  textarea.value = cleanPhone;
+  textarea.style.position = "fixed";
+  textarea.style.opacity = "0";
+  document.body.appendChild(textarea);
+  textarea.focus();
+  textarea.select();
+
+  try {
+    document.execCommand("copy");
+    const oldText = button.textContent;
+    button.textContent = "Скопійовано ✓";
+    setTimeout(() => {
+      button.textContent = oldText;
+    }, 1400);
+  } finally {
+    textarea.remove();
+  }
+}
+
+function openPhoneModal(phone) {
+  const cleanPhone = normalizePhoneForCall(phone);
+  if (!cleanPhone) return;
+
+  const modal = ensurePhoneModal();
+  const number = modal.querySelector(".phone-modal-number");
+  const callLink = modal.querySelector("#phoneCallLink");
+  const copyBtn = modal.querySelector("#phoneCopyBtn");
+
+  number.textContent = phone || cleanPhone;
+  callLink.href = `tel:${cleanPhone}`;
+
+  copyBtn.onclick = () => copyPhoneNumber(cleanPhone, copyBtn);
+
+  callLink.onclick = () => {
+    setTimeout(() => {
+      // Якщо WebView блокує tel:, модальне вікно залишається відкритим,
+      // щоб користувач міг одразу скопіювати номер.
+    }, 0);
+  };
+
+  modal.classList.add("open");
+}
+
+function cellPhone(phone) {
+  const td = document.createElement("td");
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "phone phone-button";
+  button.textContent = phone || "—";
+  button.disabled = !phone;
+
+  button.addEventListener("click", (event) => {
+    event.preventDefault();
+    event.stopPropagation();
+    openPhoneModal(phone);
+  });
+
+  td.appendChild(button);
+  return td;
+}
+
+function cellStatus(item) {
+  const td = document.createElement("td");
+  const select = document.createElement("select");
+  select.className = `status-select ${item.status === "no" ? "status-no" : "status-yes"}`;
+  select.innerHTML = '<option value="yes">Буде</option><option value="no">Не буде</option>';
+  select.value = item.status;
+  select.addEventListener("change", async () => {
+    const previous = item.status;
+    item.status = select.value;
+    select.className = `status-select ${select.value === "no" ? "status-no" : "status-yes"}`;
+    try {
+      await api(`/api/registrations/${item.id}/status`, {
+        method: "PATCH",
+        headers: {"Content-Type": "application/json"},
+        body: JSON.stringify({status: select.value})
+      });
+    } catch (err) {
+      item.status = previous;
+      select.value = previous;
+      select.className = `status-select ${previous === "no" ? "status-no" : "status-yes"}`;
+      showError(err.message);
+    }
+  });
+  td.appendChild(select);
+  return td;
+}
+
+function showError(message) {
+  el.error.textContent = message;
+  el.error.style.display = "block";
+}
+
+
+function switchView(view) {
+  const settings = view === "settings";
+  el.recordsView.hidden = settings;
+  el.settingsView.hidden = !settings;
+  el.appTabs?.querySelectorAll(".app-tab").forEach(btn => {
+    btn.classList.toggle("active", btn.dataset.view === view);
+  });
+}
+
+async function loadLimits() {
+  if (state.me?.role !== "developer") return;
+  el.settingsSaveStatus.textContent = "Завантаження…";
+  limitsData = await api("/api/limits");
+  renderLimits();
+  el.settingsSaveStatus.textContent = "";
+}
+
+function renderLimits() {
+  if (!limitsData) return;
+  const dates = limitsData.dates || [];
+  const restaurants = limitsData.restaurants || [];
+
+  el.limitsHead.innerHTML = "";
+  const hr = document.createElement("tr");
+  for (const title of ["Ресторан", "Запис", ...dates.map(shortDate)]) {
+    const th = document.createElement("th");
+    th.textContent = title;
+    hr.appendChild(th);
+  }
+  el.limitsHead.appendChild(hr);
+  el.limitsBody.innerHTML = "";
+
+  for (const r of restaurants) {
+    const tr = document.createElement("tr");
+    tr.dataset.groupId = r.id ?? r.group_id;
+
+    const name = document.createElement("td");
+    name.className = "limits-restaurant-name";
+    name.textContent = r.name || "—";
+    tr.appendChild(name);
+
+    const enabledCell = document.createElement("td");
+    enabledCell.className = "limits-enabled-cell";
+    const enabled = document.createElement("input");
+    enabled.type = "checkbox";
+    enabled.className = "limit-enabled";
+    enabled.checked = r.enabled !== false;
+    enabledCell.appendChild(enabled);
+    tr.appendChild(enabledCell);
+
+    const limits = r.limits || {};
+    for (const date of dates) {
+      const info = limits[date] || {};
+      const td = document.createElement("td");
+      td.className = "limit-date-cell";
+      td.dataset.dateLabel = shortDate(date);
+
+      const input = document.createElement("input");
+      input.type = "number";
+      input.min = "0";
+      input.max = "999";
+      input.inputMode = "numeric";
+      input.className = "limit-input";
+      input.dataset.date = date;
+      input.placeholder = "∞";
+      input.value = info.seat_limit == null ? "" : info.seat_limit;
+
+      const meta = document.createElement("div");
+      meta.className = "limit-meta";
+      const booked = Number(info.booked_children ?? 0);
+      meta.textContent = info.remaining == null
+        ? `Записано: ${booked}`
+        : `Записано: ${booked} · Вільно: ${info.remaining}`;
+
+      td.append(input, meta);
+      tr.appendChild(td);
+    }
+    el.limitsBody.appendChild(tr);
+  }
+}
+
+async function saveLimits() {
+  if (state.me?.role !== "developer") return;
+  const restaurants = [];
+
+  el.limitsBody.querySelectorAll("tr[data-group-id]").forEach(tr => {
+    const limits = {};
+    tr.querySelectorAll(".limit-input").forEach(input => {
+      const raw = input.value.trim();
+      limits[input.dataset.date] = raw === "" ? null : Number(raw);
+    });
+    const groupId = Number(tr.dataset.groupId);
+    restaurants.push({
+      id: groupId,
+      group_id: groupId,
+      enabled: tr.querySelector(".limit-enabled")?.checked ?? true,
+      limits
+    });
+  });
+
+  el.saveLimitsButton.disabled = true;
+  el.settingsSaveStatus.textContent = "Зберігаємо…";
+  try {
+    await api("/api/limits", {
+      method: "PUT",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({restaurants})
+    });
+    el.settingsSaveStatus.textContent = "Збережено ✓";
+    await loadLimits();
+    el.settingsSaveStatus.textContent = "Збережено ✓";
+  } catch (err) {
+    el.settingsSaveStatus.textContent = err.message;
+  } finally {
+    el.saveLimitsButton.disabled = false;
+  }
+}
+
+el.appTabs?.addEventListener("click", async event => {
+  const button = event.target.closest(".app-tab");
+  if (!button) return;
+  if (button.dataset.view === "settings") {
+    if (state.me?.role !== "developer") return;
+    switchView("settings");
+    try { await loadLimits(); } catch (err) { el.settingsSaveStatus.textContent = err.message; }
+  } else {
+    switchView("records");
+  }
+});
+
+el.saveLimitsButton?.addEventListener("click", saveLimits);
+
+
+let searchTimer;
+el.searchInput.addEventListener("input", () => {
+  clearTimeout(searchTimer);
+  state.search = el.searchInput.value.trim();
+  searchTimer = setTimeout(() => loadRegistrations().catch(e => showError(e.message)), 250);
+});
+
+(async function start() {
+  try {
+    await loadMe();
+    await loadDates();
+    await loadRestaurants();
+    await loadRegistrations();
+  } catch (err) {
+    showError(err.message);
+    el.empty.style.display = "none";
+  }
+})();
